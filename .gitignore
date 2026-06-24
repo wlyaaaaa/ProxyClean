@@ -1,0 +1,11 @@
+# 绝不提交任何机场的配置/订阅/凭据(可能含节点密码、订阅 token)
+*.secure.yaml
+verge.yaml
+settings.yaml
+subscription.yaml
+credentials.json
+remote_config.yaml
+remote_config.json
+profiles/
+*.log
+*.tmp
