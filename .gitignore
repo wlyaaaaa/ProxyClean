@@ -14,3 +14,4 @@ profiles/
 fallback/mihomo.exe
 *.exe
 fallback/_*.bat
+fallback/cache.db
