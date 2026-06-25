@@ -102,6 +102,36 @@ $Airports = [ordered]@{
   若希望 Qoder / 终端立刻生效,重启该程序即可。
 - 若提示「机场端口在监听但出口不通」,通常是该机场**额度满 / 节点挂了**——换一个机场,再跑一次本工具。
 
+## 进阶:常驻兜底层(fallback/) —— 让应用永不被机场端口绑架
+
+`ProxyClean` 是「断开后事后救火」。如果你想**根治**「机场一关,命令行/Electron 就断网」,
+用 `fallback/` 里的常驻兜底层。
+
+**根因**:很多人把 `HTTP_PROXY` / 系统代理**焊死**在某个机场端口(如飞鸟 `127.0.0.1:7892`)。
+应用只会无脑把流量甩给这个端口,**不会在端口连不上时回退直连**。于是机场一关,端口 `connection refused`,
+连国内访问都断 —— 哪怕它根本不需要翻墙。
+
+**做法**:常驻一个 mihomo 实例监听**永不消失**的固定端口 `7899`,所有应用指向它;
+它用 `fallback` 组做故障转移:**飞鸟活→走飞鸟、飞鸟关→走 TAG、两个都关→直连**。
+它**不开 tun、不接管 DNS**,只是个 HTTP/SOCKS 转发器,分流仍交给机场内核。
+
+| 文件 | 作用 |
+|------|------|
+| `fallback/config.yaml` | 兜底 mihomo 配置:`mixed-port: 7899`,`AUTO = fallback[feiniao, tag, DIRECT]` |
+| `fallback/start-hidden.vbs` | 无窗口启动器(供开机自启调用) |
+| `fallback/代理状态.bat` | 双击查看「现在到底走飞鸟 / TAG / 还是直连」,识破"以为翻墙其实直连"的假象 |
+
+**安装要点**:
+1. 把你的 mihomo 内核复制成 `fallback/mihomo.exe`(本仓库**不含** exe,见 `.gitignore`)。
+2. 开机自启:`HKCU\...\Run` 加一项 `wscript "…\fallback\start-hidden.vbs"`(无需管理员)。
+3. 解焊:把 `HTTP_PROXY/HTTPS_PROXY` 与系统代理从机场端口改指 `127.0.0.1:7899`(`NO_PROXY` 白名单保留)。
+
+**关键提醒**:`mixed-port` 健康检查 URL **必须用国内地址**(本配置用 `http://www.baidu.com`)。
+若用 google,机场全关时所有节点连 DIRECT 都被判不健康,fallback 会回退命中死端口 → 又断网。
+
+> ⚠️ 360 / 安全软件可能把 `fallback/mihomo.exe` 当木马删除。务必把 `fallback/` 目录加进**信任区**,
+> 否则开机 exe 被删 → 7899 起不来 → 指向 7899 的应用全断。
+
 ## License
 
 MIT. 详见 [LICENSE](LICENSE)。

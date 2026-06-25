@@ -1,0 +1,24 @@
+mixed-port: 7899
+allow-lan: false
+mode: rule
+log-level: warning
+external-controller: 127.0.0.1:9899
+# No tun, no DNS hijack -- this is only an HTTP/SOCKS forwarder. Never touches routes/DNS.
+
+proxies:
+  - { name: feiniao, type: http, server: 127.0.0.1, port: 7892 }
+  - { name: tag,     type: http, server: 127.0.0.1, port: 7890 }
+
+proxy-groups:
+  - name: AUTO
+    type: fallback
+    proxies: [feiniao, tag, DIRECT]
+    # Health-check URL MUST be a domestic site: it only probes whether the upstream port is alive.
+    # With google, when both airports are off, feiniao/tag/DIRECT all test unhealthy and fallback
+    # would hit the first (dead) port again -> outage. baidu keeps DIRECT healthy so it lands on direct.
+    url: http://www.baidu.com
+    interval: 30
+    lazy: false
+
+rules:
+  - MATCH,AUTO
