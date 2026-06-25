@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ProxyClean —— 机场(代理)断开/切换后的网络状态清理与对齐工具
     Clean up and re-align Windows network state after a TUN-based proxy
@@ -102,6 +102,20 @@ if($targetPort){
     Ok "已关闭系统代理 + 清空代理环境变量(直连)"
 }
 # 注:NO_PROXY 保持不变(里面有 aliyun 等白名单),不动。
+
+# ── 3b) 对齐 git 代理(git 不读环境变量,有自己的 http.proxy 配置)──────────
+$git = Get-Command git -ErrorAction SilentlyContinue
+if($git){
+    if($targetPort){
+        & git config --global http.proxy  "http://127.0.0.1:$targetPort" 2>$null
+        & git config --global https.proxy "http://127.0.0.1:$targetPort" 2>$null
+        Ok "git 代理 -> http://127.0.0.1:$targetPort"
+    } else {
+        & git config --global --unset http.proxy  2>$null
+        & git config --global --unset https.proxy 2>$null
+        Ok "已清除 git 代理(直连)"
+    }
+}
 
 # ── 4) 刷新 DNS + 通知 WinINET 设置已变 ──────────────────────────────────
 try { ipconfig /flushdns | Out-Null; Ok "已刷新 DNS 缓存" } catch {}

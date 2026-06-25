@@ -104,33 +104,138 @@ $Airports = [ordered]@{
 
 ## 进阶:常驻兜底层(fallback/) —— 让应用永不被机场端口绑架
 
-`ProxyClean` 是「断开后事后救火」。如果你想**根治**「机场一关,命令行/Electron 就断网」,
+`ProxyClean` 是「断开后事后救火」。如果你想**根治**「机场一关,命令行/Electron/Qoder/TAG 就连不上」,
 用 `fallback/` 里的常驻兜底层。
 
 **根因**:很多人把 `HTTP_PROXY` / 系统代理**焊死**在某个机场端口(如飞鸟 `127.0.0.1:7892`)。
 应用只会无脑把流量甩给这个端口,**不会在端口连不上时回退直连**。于是机场一关,端口 `connection refused`,
-连国内访问都断 —— 哪怕它根本不需要翻墙。
+连国内访问(比如 TAG / Qoder 的登录服务器)都断 —— 哪怕它根本不需要翻墙。
 
 **做法**:常驻一个 mihomo 实例监听**永不消失**的固定端口 `7899`,所有应用指向它;
-它用 `fallback` 组做故障转移:**飞鸟活→走飞鸟、飞鸟关→走 TAG、两个都关→直连**。
+它用 `fallback` 组做故障转移:**飞鸟活→走飞鸟、飞鸟关→走 TAG、两个都关→自动直连**。
 它**不开 tun、不接管 DNS**,只是个 HTTP/SOCKS 转发器,分流仍交给机场内核。
 
 | 文件 | 作用 |
 |------|------|
-| `fallback/config.yaml` | 兜底 mihomo 配置:`mixed-port: 7899`,`AUTO = fallback[feiniao, tag, DIRECT]` |
-| `fallback/start-hidden.vbs` | 无窗口启动器(供开机自启调用) |
+| `fallback/config.yaml` | 兜底 mihomo 配置:`mixed-port: 7899`,`AUTO = fallback[feiniao, tag, DIRECT]`,健康检查用国内地址 |
+| `fallback/start-hidden.vbs` | 无窗口启动器(供开机自启调用),启动机场自带的 mihomo 内核去读本目录配置 |
 | `fallback/代理状态.bat` | 双击查看「现在到底走飞鸟 / TAG / 还是直连」,识破"以为翻墙其实直连"的假象 |
 
-**安装要点**:
-1. 把你的 mihomo 内核复制成 `fallback/mihomo.exe`(本仓库**不含** exe,见 `.gitignore`)。
-2. 开机自启:`HKCU\...\Run` 加一项 `wscript "…\fallback\start-hidden.vbs"`(无需管理员)。
-3. 解焊:把 `HTTP_PROXY/HTTPS_PROXY` 与系统代理从机场端口改指 `127.0.0.1:7899`(`NO_PROXY` 白名单保留)。
+### ⚠️ 最关键的坑:内核 exe 必须用杀软白名单里的那个
 
-**关键提醒**:`mixed-port` 健康检查 URL **必须用国内地址**(本配置用 `http://www.baidu.com`)。
-若用 google,机场全关时所有节点连 DIRECT 都被判不健康,fallback 会回退命中死端口 → 又断网。
+360 / AlibabaProtect 会把**突然出现、又被无窗口拉起的代理 exe** 当木马删除。
+如果你复制一份**独立** `mihomo.exe` 放进 `fallback/`,它会被秒删 → 7899 起不来 →
+全局又焊在死端口 → **全断,比不装还糟**(本项目实测踩过两次)。
 
-> ⚠️ 360 / 安全软件可能把 `fallback/mihomo.exe` 当木马删除。务必把 `fallback/` 目录加进**信任区**,
-> 否则开机 exe 被删 → 7899 起不来 → 指向 7899 的应用全断。
+**正确做法:直接复用你某个机场客户端自带的、已在白名单里的内核 exe**,只让它读 `fallback/config.yaml`。
+本例用 TAG 的内核:
+
+```
+"C:\Program Files\TAG\mihomo-tag.exe" -d "C:\Users\<你>\ProxyTools\fallback"
+```
+
+这样 `fallback/` 里只剩数据文件(yaml / bat / vbs),没有会被杀的 exe。`start-hidden.vbs` 就是无窗口跑这条命令。
+
+### 安装步骤(顺序很重要)
+
+1. 改 `config.yaml` 里的端口、`start-hidden.vbs` 里的内核 exe 路径,改成你自己的。
+2. 先**手动**双击 `start-hidden.vbs` 启动,用 `代理状态.bat` 确认 7899 在跑、`now` 正确,
+   并**放几分钟确认它没被杀**。
+3. **确认稳定之后**,才把 `HTTP_PROXY/HTTPS_PROXY` + 系统代理 + git 代理改指 `127.0.0.1:7899`
+   (`NO_PROXY` 白名单保留)。**顺序绝不能反**——7899 没验证稳之前别把全局焊上去,否则它一死你就全断。
+4. 开机自启:`HKCU\...\Run` 加一项 `wscript "…\fallback\start-hidden.vbs"`(无需管理员)。
+5. 把 `fallback/` 目录加进 360 / 杀软信任区(双保险);机场客户端目录也建议加。
+
+> **健康检查 URL 必须用国内地址**(本配置用 `http://www.baidu.com`)。若用 google,
+> 机场全关时所有节点连 DIRECT 都被判不健康,fallback 会回退命中死端口 → 又断网。
+> 用国内地址只检测「上游端口是否活」,保证全关时 DIRECT 永远健康、干净落到直连。
+
+---
+
+## 故障排查:Claude Code / 命令行突然连不上怎么办
+
+> 浏览器(Chat)能用、但 **Claude Code / git / npm / curl** 连不上,几乎都是代理问题。
+> 按下面顺序一步步排查,大多数情况一两步就好。
+
+### 一、先理解:为什么"浏览器能用,命令行不行"
+
+它们读的是**两套不同的代理设置**:
+
+| 程序 | 读哪个代理 |
+|------|-----------|
+| 浏览器 / Chat / Postman / 多数 Electron / Qoder / TAG | **系统代理(WinINET)** |
+| Claude Code / git / npm / curl / Node | **环境变量 `HTTPS_PROXY`**(git 还另读自己的 `http.proxy`) |
+
+所以系统代理对了浏览器就通,但只要**环境变量**指向一个**死端口**,命令行就全断。
+反过来也一样。两套要分别检查。
+
+### 二、一键诊断(整段复制到 PowerShell)
+
+```powershell
+"== 环境变量(命令行/Claude Code 读) =="
+'HTTP_PROXY','HTTPS_PROXY' | % { "  $_ = $([Environment]::GetEnvironmentVariable($_,'User'))" }
+"== 系统代理(浏览器/Qoder/TAG 读) =="
+$r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+"  Enable=$((gp $r).ProxyEnable)  Server=$((gp $r).ProxyServer)"
+"== 端口死活(机场 + 兜底层) =="
+foreach($p in 7890,7892,7899){ "  $p : $([bool](Get-NetTCPConnection -State Listen -LocalPort $p -EA 0))" }
+"== 经兜底层 7899 实测 =="
+"  国内 = $(curl.exe -s -o NUL -m8 -w '%{http_code}' -x http://127.0.0.1:7899 http://www.baidu.com)"
+"  海外 = $(curl.exe -s -o NUL -m12 -w '%{http_code}' -x http://127.0.0.1:7899 https://www.google.com/generate_204)"
+```
+
+`200/204` 表示通,`000` 表示连不上。
+
+### 三、对症下药
+
+| 现象 | 原因 | 解决 |
+|------|------|------|
+| 环境变量/系统代理都指向活端口,就是连不上 | **终端是旧的**,还揣着改之前的代理值 | **彻底关掉 Claude Code 终端再重开**(环境变量对已运行进程无效) |
+| `7899 : False`(没监听) | 兜底层 mihomo 没起来(被杀 / 没自启) | 双击 `fallback/start-hidden.vbs` 拉起;检查 exe 是否被 360 删 |
+| 7899 在跑,国内 200、海外 000 | 机场全关,兜底落到直连 | **海外要翻墙至少开一个机场**;开飞鸟或 TAG |
+| 7899 国内通、海外不通(开着机场) | 机场节点挂了 / 额度满 | 在机场客户端换个节点 |
+| 全局指向 7899,但 7899 = False | exe 被杀,全局焊在死端口 → 全断 | 见下方「应急回退」,再修兜底层 |
+| `git push` 报 `Could not connect ... via 127.0.0.1` | git 的 `http.proxy` 指向死端口 | 见「手动指回活机场」改 git 代理 |
+| Postman 等桌面程序连不上 | 缓存了旧的死端口,或被系统代理劫持 | 先**重启该程序**;仍不行就在它自己的 Proxy 设置里关代理 |
+
+### 四、应急回退(30 秒恢复上网)
+
+**管理员 PowerShell** 跑这一段,立刻变直连——国内一切恢复,海外暂时没有:
+
+```powershell
+$r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+Set-ItemProperty $r -Name ProxyEnable -Value 0
+'HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy' | % { [Environment]::SetEnvironmentVariable($_,$null,'User') }
+git config --global --unset http.proxy  2>$null
+git config --global --unset https.proxy 2>$null
+```
+
+恢复上网后,再从容修兜底层,或用下面那段临时指回活机场。**改完都要重开终端。**
+
+### 五、手动把代理指回某个活机场(临时方案)
+
+假设 TAG(7890) 活着——把 `7890` 换成你在跑的那个机场端口:
+
+```powershell
+$P='http://127.0.0.1:7890'
+'HTTP_PROXY','HTTPS_PROXY' | % { [Environment]::SetEnvironmentVariable($_,$P,'User') }
+$r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+Set-ItemProperty $r -Name ProxyServer -Value '127.0.0.1:7890'
+Set-ItemProperty $r -Name ProxyEnable -Value 1
+git config --global http.proxy  $P
+git config --global https.proxy $P
+```
+
+> 或者直接双击 `一键修复网络.bat`,它会自动对齐系统代理 + 环境变量到在跑的机场(但不改 git,git 需手动)。
+> **改完务必重开 Claude Code 终端 / Qoder** 才生效。
+
+### 六、最容易踩的五个坑
+
+1. **环境变量对已运行进程无效**——改了代理一定要重开终端 / Qoder / Postman,否则白改。
+2. **别复制独立 `mihomo.exe`**——会被 360 秒删;用机场客户端自带的白名单 exe。
+3. **健康检查别用 google**——机场全关时会误判全部不健康,回退到死端口。要用国内地址。
+4. **`.bat` 必须 GBK + CRLF 编码**——UTF-8 / LF 会让 cmd 把中文和 URL 拆碎,报 `'xxx' 不是内部或外部命令`。
+5. **飞鸟用「智能分流」别用「全局代理」**——全局代理会把国内登录也绕到海外节点,反而更慢/更容易失败。
 
 ## License
 
