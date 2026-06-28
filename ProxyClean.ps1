@@ -12,9 +12,14 @@
       3) 环境变量指向死端口 —— HTTP_PROXY/HTTPS_PROXY 还指着死端口(Qoder/ollama 等会断网)
       4) fake-ip DNS 缓存   —— 解析结果还是 198.18.x.x
 
-    本工具不杀进程、不改任何机场的配置、不碰 TUN 开关。它只做一件事:
-    **读取当前真正在监听的机场,把系统代理 / 路由 / DNS 全部对齐到它;
-    若没有任何机场在跑,则干净地恢复成直连。**
+    本工具不杀进程、不改任何机场的配置、不碰 TUN 开关。
+    【安全版原则 —— 绝不把"持久设置"焊到一个会消失的端口上】
+      1) 环境变量 HTTP_PROXY/HTTPS_PROXY 与 git 代理:只会被【清成直连】,永不指向某端口
+         (这是"机场一关,命令行/Claude Code/git 全断"的根因,旧版恰恰会主动制造它)。
+      2) 系统代理(WinINET):机场在跑时由机场自己维护,本工具不抢;仅当它指向的
+         【本地端口已死】(断网元凶)或加 -Direct 时,才关掉它恢复直连。
+      3) 清孤儿路由带硬保护:若当前没有任何健康的物理默认路由,则【不删除任何路由】,
+         绝不会再像旧版那样误删 WLAN/以太网,把你彻底搞断网。
 
 .PARAMETER Direct
     强制清理成"直连"(关闭系统代理 + 清空代理环境变量),即使有机场在监听。
@@ -64,57 +69,102 @@ if($Direct){
 }
 
 # ── 2) 清理孤儿 TUN 默认路由 ─────────────────────────────────────────────
-# 规则:删掉 [所在网卡已 Down] 或 [直连模式下指向 fake-ip(198.18/198.19) 的网关] 的 0.0.0.0/0。
-# 正在使用、且网卡 Up 的机场 TUN 路由会被保留(TUN 都要,不动它)。
-$removed = 0
-foreach($r in (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)){
+# 安全规则(只删黑洞,绝不把你弄断网):
+#   • 只删"黑洞"默认路由:NextHop 是 fake-ip(198.18/198.19)、或所在网卡已 Down/已消失。
+#   • 绝不碰"健康的物理默认路由"(网卡 Up + 真实网关,如 WLAN/以太网)。
+#   • 正在用、网卡 Up 的机场 TUN 路由(fake-ip)会被保留 —— 仅在"直连模式"下才清它。
+#   • 【硬保护】若当前一条健康物理默认路由都没有,则本次【不删任何路由】并告警 ——
+#     此时删任何东西都可能让你彻底断网(这正是旧版误删 WLAN 路由、要重置网络的根因)。
+function Test-HealthyPhysRoute($r){
     $ad = Get-NetAdapter -InterfaceIndex $r.ifIndex -ErrorAction SilentlyContinue
-    $adapterDown = ($ad -and $ad.Status -ne 'Up')
-    $isFakeip    = ($r.NextHop -match '^198\.1[89]\.')
-    $kill = $false
-    if($adapterDown){ $kill = $true; $why = "网卡已 Down(黑洞)" }
-    elseif($isFakeip -and ($targetPort -eq $null)){ $kill = $true; $why = "直连模式下残留的 fake-ip TUN 路由" }
-    if($kill){
-        try { Remove-NetRoute -InputObject $r -Confirm:$false -ErrorAction Stop
-              Ok "移除默认路由 via $($r.NextHop) ($($r.InterfaceAlias)) —— $why"; $removed++ }
-        catch { Warn "无法移除 via $($r.NextHop):$($_.Exception.Message)(需要管理员权限?)" }
-    }
+    return ($ad -and $ad.Status -eq 'Up') -and ($r.NextHop -ne '0.0.0.0') -and ($r.NextHop -notmatch '^198\.1[89]\.')
 }
-if($removed -eq 0){ Info "没有需要清理的孤儿路由" }
+$allDef  = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+$healthy = @($allDef | Where-Object { Test-HealthyPhysRoute $_ })
+$removed = 0
+if($healthy.Count -lt 1){
+    Warn "未找到任何健康的物理默认路由 —— 为避免把你彻底搞断网,本次不删除任何路由。"
+    Warn "请先确认 WLAN/以太网已连上,再重跑本工具。"
+} else {
+    foreach($r in $allDef){
+        if(Test-HealthyPhysRoute $r){ continue }   # 健康物理路由:绝不碰
+        $ad = Get-NetAdapter -InterfaceIndex $r.ifIndex -ErrorAction SilentlyContinue
+        $isFakeip = ($r.NextHop -match '^198\.1[89]\.')
+        $kill = $false; $why = ''
+        if(-not $ad)                { $kill = $true; $why = "网卡已消失(残留路由)" }
+        elseif($ad.Status -ne 'Up') { $kill = $true; $why = "网卡已 Down(黑洞)" }
+        elseif($isFakeip -and ($targetPort -eq $null)){ $kill = $true; $why = "直连模式下残留的 fake-ip TUN 路由($($r.NextHop))" }
+        if($kill){
+            try { Remove-NetRoute -InputObject $r -Confirm:$false -ErrorAction Stop
+                  Ok "移除孤儿默认路由 via $($r.NextHop) ($($r.InterfaceAlias)) —— $why"; $removed++ }
+            catch { Warn "无法移除 via $($r.NextHop):$($_.Exception.Message)(需要管理员权限?)" }
+        }
+    }
+    if($removed -eq 0){ Info "没有需要清理的孤儿路由" }
+}
 
 # ── 健全性检查:确保还有物理默认路由 ─────────────────────────────────────
 $phys = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -ne '0.0.0.0' -and ((Get-NetAdapter -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).Status -eq 'Up') }
 if(-not $phys){ Warn "当前没有可用的默认路由!请检查物理网络(WLAN/以太网)是否已连接。" }
 
-# ── 3) 对齐系统代理(WinINET) + 环境变量 ────────────────────────────────
+# ── 3) 修正持久代理:env / 系统代理(绝不焊死端口) ────────────────────────────────
 $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 $envVars = 'HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'
-if($targetPort){
-    $proxy = "127.0.0.1:$targetPort"
-    Set-ItemProperty -Path $reg -Name ProxyEnable -Value 1 -Type DWord -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $reg -Name ProxyServer -Value $proxy -ErrorAction SilentlyContinue
-    foreach($v in $envVars){ [Environment]::SetEnvironmentVariable($v, "http://$proxy", 'User') }
-    Ok "系统代理 + 环境变量 -> http://$proxy"
-} else {
-    Set-ItemProperty -Path $reg -Name ProxyEnable -Value 0 -Type DWord -ErrorAction SilentlyContinue
-    foreach($v in $envVars){ [Environment]::SetEnvironmentVariable($v, $null, 'User') }
-    Ok "已关闭系统代理 + 清空代理环境变量(直连)"
-}
-# 注:NO_PROXY 保持不变(里面有 aliyun 等白名单),不动。
 
-# ── 3b) 对齐 git 代理(git 不读环境变量,有自己的 http.proxy 配置)──────────
+# 判定"一个代理串是否 = 已死的本地端口"。本工具铁律:只在代理指向【死掉的本地端口】
+# (机场一关就全断的元凶)时才清它;指向活端口或远程代理一律不动;且【永不主动设置代理】。
+function Test-LocalProxyDead([string]$s){
+    if(-not $s){ return $false }
+    if($s -notmatch '127\.0\.0\.1|localhost'){ return $false }   # 非本地代理:不擅自判断,不碰
+    $ports = [regex]::Matches($s, ':(\d{2,5})') | ForEach-Object { [int]$_.Groups[1].Value } | Select-Object -Unique
+    if(-not $ports){ return $false }
+    foreach($p in $ports){ if(Test-PortAlive $p){ return $false } }  # 任一端口活着 → 不算死
+    return $true
+}
+
+# 3a) 环境变量(命令行 / Claude Code / curl / Node 读它):只清掉"指向死本地端口"的;
+#     活的或远程的保留;-Direct 则全部清空。绝不主动给它设端口。
+$envCleared=$false; $envKept=$false
+foreach($v in $envVars){
+    $val=[Environment]::GetEnvironmentVariable($v,'User')
+    if(-not $val){ continue }
+    if($Direct -or (Test-LocalProxyDead $val)){ [Environment]::SetEnvironmentVariable($v,$null,'User'); $envCleared=$true }
+    else { $envKept=$true }
+}
+if($envCleared){ Ok "已清掉指向死端口的代理环境变量(改成直连;NO_PROXY 白名单不动)" }
+elseif($envKept){ Info "代理环境变量指向的端口还活着/是远程代理 —— 保持不动" }
+else { Info "代理环境变量本来就是空的(直连)" }
+
+# 3c) 系统代理(WinINET,浏览器/Electron 读它):机场在跑时由机场自己维护,本工具不抢。
+#     仅当 -Direct,或它开着却指向【已死的本地端口】时,才关掉它恢复直连;其余保持原样。
+$pp = Get-ItemProperty -Path $reg -ErrorAction SilentlyContinue
+$curEnable = [int]$pp.ProxyEnable
+$curServer = [string]$pp.ProxyServer
+if($Direct){
+    Set-ItemProperty -Path $reg -Name ProxyEnable -Value 0 -Type DWord -ErrorAction SilentlyContinue
+    Ok "系统代理:已强制关闭(直连)"
+} elseif($curEnable -eq 1 -and (Test-LocalProxyDead $curServer)){
+    Set-ItemProperty -Path $reg -Name ProxyEnable -Value 0 -Type DWord -ErrorAction SilentlyContinue
+    Ok "系统代理指向的本地端口已死($curServer)—— 已关掉它(断网元凶),恢复直连"
+} elseif($curEnable -eq 1){
+    Info "系统代理开着且端口可用($curServer)—— 交给机场客户端维护,保持不动"
+} else {
+    Info "系统代理本来就是关的(直连),保持不动"
+}
+# 注:NO_PROXY 始终不动(里面有 aliyun 等白名单)。本工具永不主动开启/指定系统代理端口。
+
+# ── 3b) git 代理:只清死端口(git 有自己的 http.proxy)──────────
 $git = Get-Command git -ErrorAction SilentlyContinue
 if($git){
-    if($targetPort){
-        & git config --global http.proxy  "http://127.0.0.1:$targetPort" 2>$null
-        & git config --global https.proxy "http://127.0.0.1:$targetPort" 2>$null
-        Ok "git 代理 -> http://127.0.0.1:$targetPort"
-    } else {
+    $gp = (git config --global --get http.proxy); $gps = (git config --global --get https.proxy)
+    $gitVal = if($gp){ $gp } else { $gps }
+    if($gitVal -and ($Direct -or (Test-LocalProxyDead $gitVal))){
         & git config --global --unset http.proxy  2>$null
         & git config --global --unset https.proxy 2>$null
-        Ok "已清除 git 代理(直连)"
-    }
+        Ok "已清掉指向死端口的 git 代理(改成直连)"
+    } elseif($gitVal){ Info "git 代理指向的端口还活着/是远程代理 —— 保持不动" }
+    else { Info "git 代理本来就没设(直连)" }
 }
 
 # ── 4) 刷新 DNS + 通知 WinINET 设置已变 ──────────────────────────────────
