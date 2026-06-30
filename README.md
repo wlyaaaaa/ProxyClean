@@ -44,8 +44,12 @@
 
 | 文件 | 作用 |
 |------|------|
-| **`一键修复网络.bat`** | 自动检测在跑的机场并对齐;没有机场则恢复直连。**90% 的情况用这个。** |
-| **`恢复直连.bat`** | 强制恢复直连(关掉所有代理走本地网络),哪怕还有机场在监听。 |
+| **`一键修复网络.bat`** | 自动检测在跑的机场并对齐;没有机场则恢复直连。需要管理员权限。**90% 的情况用这个。** |
+| **`恢复直连.bat`** | 强制恢复直连(关掉所有代理走本地网络),哪怕还有机场在监听。需要管理员权限。 |
+| **`一键对齐代理.bat`** | 仅将环境变量代理(HTTP_PROXY/HTTPS_PROXY)对齐到在跑的机场。**免 UAC(无需管理员权限)**。用于切完机场或网络变化后,一键给命令行、Claude Code、Antigravity 对齐代理。 |
+| **`查看当前走哪个.bat`** | 显示 7892/7897 谁在监听、系统代理/环境变量/默认路由,并对比当前默认出口与强制走 7892/7897 的出口 IP。 |
+| **`关闭7897-ClashVerge.bat`** | 强制结束监听 `127.0.0.1:7897` 的 Clash Verge/mihomo 进程,并清掉指向 7897 的代理残留。需要管理员权限。 |
+| **`关闭7892-飞鸟.bat`** | 强制结束监听 `127.0.0.1:7892` 的飞鸟核心进程,并清掉指向 7892 的代理残留。需要管理员权限。 |
 
 ### 命令行 / PowerShell
 
@@ -55,6 +59,16 @@ powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1
 
 # 强制恢复直连
 powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1 -Direct
+
+# 仅对齐环境变量代理到当前在跑的机场(免 UAC,主要用于命令行/代理对齐)
+powershell -ExecutionPolicy Bypass -File .\Set-AirportProxy.ps1
+
+# 查看当前默认出口更像走 7892 还是 7897
+powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
+
+# 强制关闭指定端口对应的本地代理进程
+powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7897 -Label ClashVerge-7897
+powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7892 -Label FlyingBird-7892
 ```
 
 输出示例:
@@ -76,14 +90,15 @@ WLAN  192.168.31.1            0
 
 ## 适配你自己的机场 / Adapt to your proxies
 
-脚本顶部有一张机场表,默认内置了飞鸟和 TAG。**改成你自己的机场名 + 混合端口(mixed-port)即可**,
+脚本顶部有一张机场表,默认内置了 ClashVerge、飞鸟和 TAG。**改成你自己的机场名 + 混合端口(mixed-port)即可**,
 顺序就是优先级(从上到下):
 
 ```powershell
 $Airports = [ordered]@{
-    'FlyingBird(飞鸟)' = 7892
+    'FlyingBird(飞鸟)' = 7892  # 主梯子
+    'ClashVerge'       = 7897  # 次梯子
     'TAG'              = 7890
-    # '你的机场'        = 7897   # ← 照着加
+    # '你的机场'        = 端口号   # ← 照着加
 }
 ```
 
@@ -121,7 +136,7 @@ mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了)
 
 | 文件 | 作用 |
 |------|------|
-| `fallback/config.yaml` | 兜底 mihomo 配置:`mixed-port: 7899`,`AUTO = fallback[feiniao, tag, DIRECT]`,健康检查用国内地址 |
+| `fallback/config.yaml` | 兜底 mihomo 配置:`mixed-port: 7899`,`AUTO = fallback[feiniao, clashverge, tag, DIRECT]`,健康检查用国内地址 |
 | `fallback/start-hidden.vbs` | 无窗口启动器(供开机自启调用),启动机场自带的 mihomo 内核去读本目录配置 |
 | `fallback/代理状态.bat` | 双击查看「现在到底走飞鸟 / TAG / 还是直连」,识破"以为翻墙其实直连"的假象 |
 
@@ -180,7 +195,9 @@ mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了)
 $r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 "  Enable=$((gp $r).ProxyEnable)  Server=$((gp $r).ProxyServer)"
 "== 端口死活(机场 + 兜底层) =="
-foreach($p in 7890,7892,7899){ "  $p : $([bool](Get-NetTCPConnection -State Listen -LocalPort $p -EA 0))" }
+foreach($p in 7890,7892,7897,7899){ "  $p : $([bool](Get-NetTCPConnection -State Listen -LocalPort $p -EA 0))" }
+"== 7892 / 7897 当前出口对比 =="
+powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
 "== 经兜底层 7899 实测 =="
 "  国内 = $(curl.exe -s -o NUL -m8 -w '%{http_code}' -x http://127.0.0.1:7899 http://www.baidu.com)"
 "  海外 = $(curl.exe -s -o NUL -m12 -w '%{http_code}' -x http://127.0.0.1:7899 https://www.google.com/generate_204)"
@@ -194,7 +211,8 @@ foreach($p in 7890,7892,7899){ "  $p : $([bool](Get-NetTCPConnection -State List
 |------|------|------|
 | 环境变量/系统代理都指向活端口,就是连不上 | **终端是旧的**,还揣着改之前的代理值 | **彻底关掉 Claude Code 终端再重开**(环境变量对已运行进程无效) |
 | `7899 : False`(没监听) | 兜底层 mihomo 没起来(被杀 / 没自启) | 双击 `fallback/start-hidden.vbs` 拉起;检查 exe 是否被 360 删 |
-| 7899 在跑,国内 200、海外 000 | 机场全关,兜底落到直连 | **海外要翻墙至少开一个机场**;开飞鸟或 TAG |
+| 7892 和 7897 都在跑,不知道走谁 | 两个 TUN/HTTP 代理同时监听,默认路由和应用代理可能各走各的 | 双击 `查看当前走哪个.bat`;需要只留一个时双击 `关闭7897-ClashVerge.bat` 或 `关闭7892-飞鸟.bat` |
+| 7899 在跑,国内 200、海外 000 | 机场全关,兜底落到直连 | **海外要翻墙至少开一个机场**;开 ClashVerge / 飞鸟 / TAG |
 | 7899 国内通、海外不通(开着机场) | 机场节点挂了 / 额度满 | 在机场客户端换个节点 |
 | 全局指向 7899,但 7899 = False | exe 被杀,全局焊在死端口 → 全断 | 见下方「应急回退」,再修兜底层 |
 | `git push` 报 `Could not connect ... via 127.0.0.1` | git 的 `http.proxy` 指向死端口 | 见「手动指回活机场」改 git 代理 |
@@ -216,19 +234,19 @@ git config --global --unset https.proxy 2>$null
 
 ### 五、手动把代理指回某个活机场(临时方案)
 
-假设 TAG(7890) 活着——把 `7890` 换成你在跑的那个机场端口:
+假设某个机场端口活着——把下面的 `7897` 换成你要走的端口(ClashVerge `7897`,飞鸟 `7892`,TAG `7890`):
 
 ```powershell
-$P='http://127.0.0.1:7890'
+$P='http://127.0.0.1:7897'
 'HTTP_PROXY','HTTPS_PROXY' | % { [Environment]::SetEnvironmentVariable($_,$P,'User') }
 $r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-Set-ItemProperty $r -Name ProxyServer -Value '127.0.0.1:7890'
+Set-ItemProperty $r -Name ProxyServer -Value '127.0.0.1:7897'
 Set-ItemProperty $r -Name ProxyEnable -Value 1
 git config --global http.proxy  $P
 git config --global https.proxy $P
 ```
 
-> 或者直接双击 `一键修复网络.bat`,它会自动对齐系统代理 + 环境变量到在跑的机场(但不改 git,git 需手动)。
+> 或者直接双击 `一键对齐代理.bat`,它只会把用户级环境变量指向当前第一个监听的活机场;默认优先级是飞鸟 `7892` > ClashVerge `7897` > TAG `7890`。系统代理仍交给机场客户端自己维护。
 > **改完务必重开 Claude Code 终端 / Qoder** 才生效。
 
 ### 六、最容易踩的五个坑

@@ -43,15 +43,57 @@ function Info($m){ if(-not $Quiet){ Write-Host "[*] $m" -ForegroundColor Cyan } 
 function Ok($m)  { Write-Host "[+] $m" -ForegroundColor Green }
 function Warn($m){ Write-Host "[!] $m" -ForegroundColor Yellow }
 
+# ── C++/Win32 PInvoke 声明(用于快速非阻塞广播环境变量变更) ───────────────────────
+$User32Sig = @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd,
+    uint Msg,
+    System.IntPtr wParam,
+    string lParam,
+    uint fuFlags,
+    uint uTimeout,
+    out System.IntPtr lpdwResult
+);
+'@
+
+if (-not ([System.Management.Automation.PSTypeName]'User32.NativeMethods').Type) {
+    Add-Type -Namespace User32 -Name NativeMethods -MemberDefinition $User32Sig
+}
+
+function Set-UserEnvFast([string]$name, [string]$value){
+    $regPath = "HKCU:\Environment"
+    if ($value -eq $null -or $value -eq "") {
+        if (Get-ItemProperty -Path $regPath -Name $name -ErrorAction SilentlyContinue) {
+            Remove-ItemProperty -Path $regPath -Name $name -ErrorAction SilentlyContinue
+        }
+    } else {
+        Set-ItemProperty -Path $regPath -Name $name -Value $value -Type String
+    }
+}
+
+function Broadcast-EnvChange(){
+    $result = [IntPtr]::Zero
+    # HWND_BROADCAST = 0xffff, WM_SETTINGCHANGE = 0x001A, SMTO_ABORTIFHUNG = 0x0002, timeout = 200ms
+    [User32.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [IntPtr]::Zero, "Environment", 2, 200, [ref]$result) | Out-Null
+}
+
 # ── 机场定义:名字 -> 混合端口(mixed-port) ────────────────────────────────
 # 想新增机场,在这里加一行 端口 即可(按优先级从上到下)。
 $Airports = [ordered]@{
     'FlyingBird(飞鸟)' = 7892
+    'ClashVerge'       = 7897
     'TAG'              = 7890
 }
 
 function Test-PortAlive([int]$p){
-    [bool](Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue)
+    try {
+        # 使用 .NET 方式获取监听端口,避免 WMI/CIM 潜在的死锁/卡顿问题
+        $listeners = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
+        return [bool]($listeners | Where-Object { $_.Port -eq $p })
+    } catch {
+        return [bool](Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue)
+    }
 }
 
 Write-Host "==================== ProxyClean ====================" -ForegroundColor White
@@ -75,8 +117,17 @@ if($Direct){
 #   • 正在用、网卡 Up 的机场 TUN 路由(fake-ip)会被保留 —— 仅在"直连模式"下才清它。
 #   • 【硬保护】若当前一条健康物理默认路由都没有,则本次【不删任何路由】并告警 ——
 #     此时删任何东西都可能让你彻底断网(这正是旧版误删 WLAN 路由、要重置网络的根因)。
+# 预先获取一次所有网卡状态,避免在循环中重复调用 Get-NetAdapter 导致严重的 WMI/CIM 卡顿
+$adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue)
+$adMap = @{}
+foreach($ad in $adapters){
+    if($ad.InterfaceIndex -ne $null){
+        $adMap[$ad.InterfaceIndex] = $ad
+    }
+}
+
 function Test-HealthyPhysRoute($r){
-    $ad = Get-NetAdapter -InterfaceIndex $r.ifIndex -ErrorAction SilentlyContinue
+    $ad = $adMap[$r.ifIndex]
     return ($ad -and $ad.Status -eq 'Up') -and ($r.NextHop -ne '0.0.0.0') -and ($r.NextHop -notmatch '^198\.1[89]\.')
 }
 $allDef  = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
@@ -88,7 +139,7 @@ if($healthy.Count -lt 1){
 } else {
     foreach($r in $allDef){
         if(Test-HealthyPhysRoute $r){ continue }   # 健康物理路由:绝不碰
-        $ad = Get-NetAdapter -InterfaceIndex $r.ifIndex -ErrorAction SilentlyContinue
+        $ad = $adMap[$r.ifIndex]
         $isFakeip = ($r.NextHop -match '^198\.1[89]\.')
         $kill = $false; $why = ''
         if(-not $ad)                { $kill = $true; $why = "网卡已消失(残留路由)" }
@@ -105,7 +156,7 @@ if($healthy.Count -lt 1){
 
 # ── 健全性检查:确保还有物理默认路由 ─────────────────────────────────────
 $phys = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-        Where-Object { $_.NextHop -ne '0.0.0.0' -and ((Get-NetAdapter -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).Status -eq 'Up') }
+        Where-Object { $_.NextHop -ne '0.0.0.0' -and ($adMap[$_.ifIndex] -and $adMap[$_.ifIndex].Status -eq 'Up') }
 if(-not $phys){ Warn "当前没有可用的默认路由!请检查物理网络(WLAN/以太网)是否已连接。" }
 
 # ── 3) 修正持久代理:env / 系统代理(绝不焊死端口) ────────────────────────────────
@@ -129,10 +180,13 @@ $envCleared=$false; $envKept=$false
 foreach($v in $envVars){
     $val=[Environment]::GetEnvironmentVariable($v,'User')
     if(-not $val){ continue }
-    if($Direct -or (Test-LocalProxyDead $val)){ [Environment]::SetEnvironmentVariable($v,$null,'User'); $envCleared=$true }
+    if($Direct -or (Test-LocalProxyDead $val)){ Set-UserEnvFast $v $null; $envCleared=$true }
     else { $envKept=$true }
 }
-if($envCleared){ Ok "已清掉指向死端口的代理环境变量(改成直连;NO_PROXY 白名单不动)" }
+if($envCleared){
+    Broadcast-EnvChange
+    Ok "已清掉指向死端口的代理环境变量(改成直连;NO_PROXY 白名单不动)"
+}
 elseif($envKept){ Info "代理环境变量指向的端口还活着/是远程代理 —— 保持不动" }
 else { Info "代理环境变量本来就是空的(直连)" }
 
@@ -198,3 +252,4 @@ Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
     Sort-Object RouteMetric |
     Format-Table @{N='接口';E={$_.InterfaceAlias}}, @{N='网关';E={$_.NextHop}}, RouteMetric -AutoSize
 Write-Host "====================================================" -ForegroundColor White
+
