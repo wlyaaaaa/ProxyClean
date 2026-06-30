@@ -61,11 +61,15 @@ if($live){
     $p = "http://127.0.0.1:$live"
     $vars | ForEach-Object { Set-UserEnvFast $_ $p }
     Broadcast-EnvChange
+    Write-Host ("Conclusion: command-line env proxy now points to {0} ({1})." -f $p, $liveName) -ForegroundColor Green
+    Write-Host "Details:" -ForegroundColor White
     Write-Host ("  env proxy  ->  {0}   ({1} is running)" -f $p, $liveName) -ForegroundColor Green
     Write-Host "  >>> RESTART the app (Antigravity / terminal) so it picks up the new value." -ForegroundColor Yellow
 } else {
     $vars | ForEach-Object { Set-UserEnvFast $_ $null }
     Broadcast-EnvChange
+    Write-Host "Conclusion: no proxy ports are alive; command-line env proxy was cleared." -ForegroundColor Gray
+    Write-Host "Details:" -ForegroundColor White
     Write-Host "  No airport on 7892/7897/7890  ->  cleared env proxy (direct)." -ForegroundColor Gray
 }
 Write-Host ""

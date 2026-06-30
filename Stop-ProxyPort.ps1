@@ -9,7 +9,9 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port,
 
-    [string]$Label = "127.0.0.1:$Port"
+    [string]$Label = "127.0.0.1:$Port",
+
+    [string[]]$ExtraProcessName = @()
 )
 
 $ErrorActionPreference = 'Continue'
@@ -44,26 +46,63 @@ public static extern bool InternetSetOption(System.IntPtr h, int opt, System.Int
     } catch {}
 }
 
-Write-Host "==================== Stop Proxy Port ====================" -ForegroundColor White
-Info "Target: $Label (127.0.0.1:$Port)"
-
-$pids = Get-ListeningPids $Port
-if($pids.Count -eq 0){
-    Info "Port $Port has no listening process"
-} else {
-    foreach($pid in $pids){
-        $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-        if(-not $proc){
-            Warn "PID $pid no longer exists"
+function Stop-ExtraProcesses([string[]]$names){
+    foreach($name in $names){
+        if([string]::IsNullOrWhiteSpace($name)){ continue }
+        $matches = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+        if($matches.Count -eq 0){
+            Info "Extra process '$name' is not running"
             continue
         }
 
-        Info ("Stopping PID {0}: {1}" -f $pid, $proc.ProcessName)
+        foreach($proc in $matches){
+            if($proc.Id -eq $PID){ continue }
+            Info ("Stopping extra process PID {0}: {1}" -f $proc.Id, $proc.ProcessName)
+            try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+                Ok ("Stopped extra process PID {0}: {1}" -f $proc.Id, $proc.ProcessName)
+            } catch {
+                Warn ("Failed to stop extra process PID {0}: {1}" -f $proc.Id, $_.Exception.Message)
+            }
+        }
+    }
+}
+
+function Get-DefaultExtraProcessNames([int]$port){
+    switch($port){
+        7892 { return @('FlyingBird','FlyingBirdCore','FlyingBirdHelperService') }
+        7897 { return @('clash-verge','verge-mihomo') }
+        7890 { return @('TAG','tag','mihomo-tag','tag-mihomo') }
+        default { return @() }
+    }
+}
+
+Write-Host "==================== Stop Proxy Port ====================" -ForegroundColor White
+Write-Host ("Conclusion: closing {0} (127.0.0.1:{1})." -f $Label, $Port) -ForegroundColor Yellow
+Write-Host "Details:" -ForegroundColor White
+Info "Target: $Label (127.0.0.1:$Port)"
+
+$defaultExtraProcessName = @(Get-DefaultExtraProcessNames $Port)
+$allExtraProcessName = @($defaultExtraProcessName + $ExtraProcessName | Select-Object -Unique)
+
+$pids = Get-ListeningPids $Port
+$hadListener = ($pids.Count -gt 0)
+if($pids.Count -eq 0){
+    Info "Port $Port has no listening process"
+} else {
+    foreach($processId in $pids){
+        $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if(-not $proc){
+            Warn "PID $processId no longer exists"
+            continue
+        }
+
+        Info ("Stopping PID {0}: {1}" -f $processId, $proc.ProcessName)
         try {
-            Stop-Process -Id $pid -Force -ErrorAction Stop
-            Ok ("Stopped PID {0}: {1}" -f $pid, $proc.ProcessName)
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+            Ok ("Stopped PID {0}: {1}" -f $processId, $proc.ProcessName)
         } catch {
-            Warn ("Failed to stop PID {0}: {1}" -f $pid, $_.Exception.Message)
+            Warn ("Failed to stop PID {0}: {1}" -f $processId, $_.Exception.Message)
         }
     }
 
@@ -73,9 +112,9 @@ if($pids.Count -eq 0){
         $left = Get-ListeningPids $Port
     } while($left.Count -gt 0 -and (Get-Date) -lt $deadline)
 
-    if($left.Count -eq 0){ Ok "Port $Port is no longer listening" }
-    else { Warn "Port $Port is still listening: PID $($left -join ', ')" }
 }
+
+Stop-ExtraProcesses $allExtraProcessName
 
 $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 $pp = Get-ItemProperty -Path $reg -ErrorAction SilentlyContinue
@@ -127,8 +166,17 @@ if(Test-Path $cleaner){
     & powershell -NoProfile -ExecutionPolicy Bypass -File $cleaner -Quiet
 }
 
+$finalPids = Get-ListeningPids $Port
+Write-Host "-------------------- Result --------------------" -ForegroundColor White
+if($finalPids.Count -eq 0){
+    if($hadListener){ Ok "Conclusion: port $Port is closed." }
+    else { Ok "Conclusion: port $Port was already closed." }
+} else {
+    Warn "Conclusion: port $Port is STILL listening. PID: $($finalPids -join ', ')"
+}
+
 Write-Host "-------------------- Current Ports --------------------" -ForegroundColor White
-Get-NetTCPConnection -State Listen -LocalPort 7892,7897 -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -State Listen -LocalPort 7890,7892,7897 -ErrorAction SilentlyContinue |
     Select-Object LocalAddress,LocalPort,OwningProcess |
     Format-Table -AutoSize
 

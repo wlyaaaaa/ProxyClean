@@ -47,9 +47,12 @@
 | **`一键修复网络.bat`** | 自动检测在跑的机场并对齐;没有机场则恢复直连。需要管理员权限。**90% 的情况用这个。** |
 | **`恢复直连.bat`** | 强制恢复直连(关掉所有代理走本地网络),哪怕还有机场在监听。需要管理员权限。 |
 | **`一键对齐代理.bat`** | 仅将环境变量代理(HTTP_PROXY/HTTPS_PROXY)对齐到在跑的机场。**免 UAC(无需管理员权限)**。用于切完机场或网络变化后,一键给命令行、Claude Code、Antigravity 对齐代理。 |
-| **`查看当前走哪个.bat`** | 显示 7892/7897 谁在监听、系统代理/环境变量/默认路由,并对比当前默认出口与强制走 7892/7897 的出口 IP。 |
-| **`关闭7897-ClashVerge.bat`** | 强制结束监听 `127.0.0.1:7897` 的 Clash Verge/mihomo 进程,并清掉指向 7897 的代理残留。需要管理员权限。 |
-| **`关闭7892-飞鸟.bat`** | 强制结束监听 `127.0.0.1:7892` 的飞鸟核心进程,并清掉指向 7892 的代理残留。需要管理员权限。 |
+| **`查看当前走哪个.bat`** | 显示 7890/7892/7897 谁在监听、系统代理/环境变量/默认路由,并对比当前默认出口与强制走各端口的出口 IP。 |
+| **`关闭7897-ClashVerge.bat`** | 强制结束 `127.0.0.1:7897` 的 Clash Verge/mihomo 核心,同时关闭 `clash-verge` 托盘界面,并清掉指向 7897 的代理残留。需要管理员权限。 |
+| **`关闭7892-飞鸟.bat`** | 强制结束 `127.0.0.1:7892` 的飞鸟核心,同时关闭飞鸟界面/服务外壳,并清掉指向 7892 的代理残留。需要管理员权限。 |
+| **`关闭7890-TAG.bat`** | 强制结束 `127.0.0.1:7890` 的 TAG/mihomo 核心,同时关闭 TAG 外壳进程,并清掉指向 7890 的代理残留。需要管理员权限。 |
+
+所有脚本输出都按"先结论、后详情"组织。先看顶部的 `Conclusion` / `结论`;下面的表格只是证据和排查细节。
 
 ### 命令行 / PowerShell
 
@@ -67,6 +70,7 @@ powershell -ExecutionPolicy Bypass -File .\Set-AirportProxy.ps1
 powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
 
 # 强制关闭指定端口对应的本地代理进程
+powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7890 -Label TAG-7890
 powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7897 -Label ClashVerge-7897
 powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7892 -Label FlyingBird-7892
 ```
@@ -211,7 +215,7 @@ powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
 |------|------|------|
 | 环境变量/系统代理都指向活端口,就是连不上 | **终端是旧的**,还揣着改之前的代理值 | **彻底关掉 Claude Code 终端再重开**(环境变量对已运行进程无效) |
 | `7899 : False`(没监听) | 兜底层 mihomo 没起来(被杀 / 没自启) | 双击 `fallback/start-hidden.vbs` 拉起;检查 exe 是否被 360 删 |
-| 7892 和 7897 都在跑,不知道走谁 | 两个 TUN/HTTP 代理同时监听,默认路由和应用代理可能各走各的 | 双击 `查看当前走哪个.bat`;需要只留一个时双击 `关闭7897-ClashVerge.bat` 或 `关闭7892-飞鸟.bat` |
+| 7890 / 7892 / 7897 同时跑,不知道走谁 | 多个 TUN/HTTP 代理同时监听,默认路由和应用代理可能各走各的 | 双击 `查看当前走哪个.bat`;需要只留一个时双击对应的 `关闭789*.bat` |
 | 7899 在跑,国内 200、海外 000 | 机场全关,兜底落到直连 | **海外要翻墙至少开一个机场**;开 ClashVerge / 飞鸟 / TAG |
 | 7899 国内通、海外不通(开着机场) | 机场节点挂了 / 额度满 | 在机场客户端换个节点 |
 | 全局指向 7899,但 7899 = False | exe 被杀,全局焊在死端口 → 全断 | 见下方「应急回退」,再修兜底层 |

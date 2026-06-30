@@ -110,6 +110,16 @@ if($Direct){
     else { Info "没有任何机场在监听 -> 目标:直连" }
 }
 
+Write-Host "-------------------- 结论 --------------------" -ForegroundColor White
+if($Direct){
+    Write-Host "本次将强制恢复直连:关闭系统代理、清空代理环境变量,并清理残留路由/DNS。" -ForegroundColor Yellow
+} elseif($targetPort){
+    Write-Host "本次目标:保留正在运行的 $targetName (127.0.0.1:$targetPort),只清理死端口和残留项。" -ForegroundColor Green
+} else {
+    Write-Host "本次目标:没有检测到活机场,将按直连状态清理死端口和残留项。" -ForegroundColor Yellow
+}
+Write-Host "-------------------- 详细输出 --------------------" -ForegroundColor White
+
 # ── 2) 清理孤儿 TUN 默认路由 ─────────────────────────────────────────────
 # 安全规则(只删黑洞,绝不把你弄断网):
 #   • 只删"黑洞"默认路由:NextHop 是 fake-ip(198.18/198.19)、或所在网卡已 Down/已消失。
