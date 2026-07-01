@@ -119,6 +119,7 @@ $Airports = [ordered]@{
 ## 注意 / Notes
 
 - Claude Code / Node / git 的推荐用法是**不要配置任何代理环境变量**。打开 Clash Verge Rev / sing-box / v2rayN 等客户端的 TUN / 虚拟网卡 / Enhanced Mode,让系统底层接管出站流量;终端侧保持直连。
+- 如果只是用浏览器完成网页登录,而日常使用 Claude Code / Codex App,浏览器 DNS/WebRTC/时区泄露排查可以先放低优先级;详见 [docs/claude-code-tun-browser-leaks.md](docs/claude-code-tun-browser-leaks.md)。
 - 清理用户级环境变量后,对**已经在运行**的进程不生效,**新开**的程序才会读到干净环境。
   若希望 Claude Code / Qoder / 终端立刻生效,重启该程序即可。
 - 若提示「机场端口在监听但出口不通」,通常是该机场**额度满 / 节点挂了**——换一个机场,再跑一次本工具。
