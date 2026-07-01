@@ -31,7 +31,7 @@
 
 ## 它的原则 / Design principles
 
-- **不杀进程**、**不改任何机场的配置**、**不动 TUN 开关**(TUN 都给你留着)。
+- `ProxyClean.ps1` **不杀进程**、**不改任何机场的配置**、**不动 TUN 开关**(TUN 都给你留着);`关闭789*.bat` 是单独的强制关闭工具,只在你明确要关某个客户端时使用。
 - **永不主动设置代理**:只把指向**死端口**的系统代理/环境变量/git 清成直连,活的/远程的不碰。
 - **清路由带硬保护**:只删 fake-ip 黑洞 / 网卡已 Down 的孤儿路由;**只要当前没有一条健康的物理默认路由,就一条都不删**,绝不会误删 WLAN 把你彻底断网。
 - 这正好贴合真实用法:**你用机场自己的界面去连/断,断完之后跑一下本工具把烂摊子收干净。**
@@ -46,7 +46,7 @@
 |------|------|
 | **`一键修复网络.bat`** | 自动检测在跑的机场并对齐;没有机场则恢复直连。需要管理员权限。**90% 的情况用这个。** |
 | **`恢复直连.bat`** | 强制恢复直连(关掉所有代理走本地网络),哪怕还有机场在监听。需要管理员权限。 |
-| **`一键对齐代理.bat`** | 仅将环境变量代理(HTTP_PROXY/HTTPS_PROXY)对齐到在跑的机场。**免 UAC(无需管理员权限)**。用于切完机场或网络变化后,一键给命令行、Claude Code、Antigravity 对齐代理。 |
+| **`一键对齐代理.bat`** | 历史兼容脚本:会设置用户级 `HTTP_PROXY`/`HTTPS_PROXY`。**不推荐给 Claude Code 日常使用**;优先使用代理客户端的 TUN/虚拟网卡模式,让终端保持直连环境。 |
 | **`查看当前走哪个.bat`** | 显示 7890/7892/7897 谁在监听、系统代理/环境变量/默认路由,并对比当前默认出口与强制走各端口的出口 IP。 |
 | **`关闭7897-ClashVerge.bat`** | 强制结束 `127.0.0.1:7897` 的 Clash Verge/mihomo 核心,同时关闭 `clash-verge` 托盘界面,并清掉指向 7897 的代理残留。需要管理员权限。 |
 | **`关闭7892-飞鸟.bat`** | 强制结束 `127.0.0.1:7892` 的飞鸟核心,同时关闭飞鸟界面/服务外壳,并清掉指向 7892 的代理残留。需要管理员权限。 |
@@ -62,9 +62,6 @@ powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1
 
 # 强制恢复直连
 powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1 -Direct
-
-# 仅对齐环境变量代理到当前在跑的机场(免 UAC,主要用于命令行/代理对齐)
-powershell -ExecutionPolicy Bypass -File .\Set-AirportProxy.ps1
 
 # 查看当前默认出口更像走 7892 还是 7897
 powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
@@ -122,6 +119,7 @@ $Airports = [ordered]@{
 
 ## 注意 / Notes
 
+- Claude Code / Node / git 的推荐用法是**不要配置任何代理环境变量**。打开 Clash Verge Rev / sing-box / v2rayN 等客户端的 TUN / 虚拟网卡 / Enhanced Mode,让系统底层接管出站流量;终端侧保持直连。
 - 修改环境变量是**用户级持久化**的,对**已经在运行**的进程不生效,**新开**的程序才会读到新值。
   若希望 Qoder / 终端立刻生效,重启该程序即可。
 - 若提示「机场端口在监听但出口不通」,通常是该机场**额度满 / 节点挂了**——换一个机场,再跑一次本工具。
@@ -168,8 +166,7 @@ mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了)
 这与本项目的安全原则(**绝不把持久设置焊到一个会消失的端口**)直接冲突,因此**已删除该教程**。
 `fallback/` 里的文件仅作参考保留;在你没有充分理解并接受上述风险前,**请不要把全局代理焊到 7899**。
 
-> 如果你确实需要"命令行 / Claude Code 也能稳定走代理",更安全的做法见下方
-> 「五、手动把代理指回某个活机场(临时方案)」——用完即清,主动权始终在你手里。
+> 如果你确实需要"命令行 / Claude Code 也能稳定走代理",优先使用代理客户端的 TUN / 虚拟网卡 / Enhanced Mode,不要给终端焊代理环境变量。
 
 ---
 
@@ -178,17 +175,23 @@ mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了)
 > 浏览器(Chat)能用、但 **Claude Code / git / npm / curl** 连不上,几乎都是代理问题。
 > 按下面顺序一步步排查,大多数情况一两步就好。
 
-### 一、先理解:为什么"浏览器能用,命令行不行"
+### 一、先理解:推荐用 TUN,不要给终端配置代理环境变量
 
-它们读的是**两套不同的代理设置**:
+推荐模型是:
+
+1. 在 Clash Verge Rev / sing-box / v2rayN 等代理客户端里开启 **TUN / 虚拟网卡 / Enhanced Mode**。
+2. 代理客户端在系统底层建立虚拟网卡,接管出站流量。
+3. Claude Code / Node / git / curl 不设置 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`ANTHROPIC_BASE_URL`。
+4. 对终端程序来说,它是在直连官方服务;实际出站路径由 TUN 接管。
+
+浏览器、桌面软件和终端可能仍会受不同配置影响:
 
 | 程序 | 读哪个代理 |
 |------|-----------|
-| 浏览器 / Chat / Postman / 多数 Electron / Qoder / TAG | **系统代理(WinINET)** |
-| Claude Code / git / npm / curl / Node | **环境变量 `HTTPS_PROXY`**(git 还另读自己的 `http.proxy`) |
+| 浏览器 / Chat / Postman / 多数 Electron / Qoder / TAG | 系统代理(WinINET)或客户端自己的代理设置 |
+| Claude Code / git / npm / curl / Node | 默认直连;若存在 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`,会被这些变量劫持 |
 
-所以系统代理对了浏览器就通,但只要**环境变量**指向一个**死端口**,命令行就全断。
-反过来也一样。两套要分别检查。
+所以本项目的目标不是给终端"焊代理",而是**清掉死端口、脏环境变量、孤儿路由**,让 TUN 或直连恢复正常。
 
 ### 二、一键诊断(整段复制到 PowerShell)
 
@@ -200,7 +203,7 @@ $r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 "  Enable=$((gp $r).ProxyEnable)  Server=$((gp $r).ProxyServer)"
 "== 端口死活(机场 + 兜底层) =="
 foreach($p in 7890,7892,7897,7899){ "  $p : $([bool](Get-NetTCPConnection -State Listen -LocalPort $p -EA 0))" }
-"== 7892 / 7897 当前出口对比 =="
+"== 7890 / 7892 / 7897 当前出口对比 =="
 powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
 "== 经兜底层 7899 实测 =="
 "  国内 = $(curl.exe -s -o NUL -m8 -w '%{http_code}' -x http://127.0.0.1:7899 http://www.baidu.com)"
@@ -213,13 +216,14 @@ powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
 
 | 现象 | 原因 | 解决 |
 |------|------|------|
+| 终端里存在 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 旧配置把 Claude Code / Node 劫持到某个端口 | 清空这些环境变量,重开终端;日常依赖 TUN,不要给终端配代理 |
 | 环境变量/系统代理都指向活端口,就是连不上 | **终端是旧的**,还揣着改之前的代理值 | **彻底关掉 Claude Code 终端再重开**(环境变量对已运行进程无效) |
 | `7899 : False`(没监听) | 兜底层 mihomo 没起来(被杀 / 没自启) | 双击 `fallback/start-hidden.vbs` 拉起;检查 exe 是否被 360 删 |
 | 7890 / 7892 / 7897 同时跑,不知道走谁 | 多个 TUN/HTTP 代理同时监听,默认路由和应用代理可能各走各的 | 双击 `查看当前走哪个.bat`;需要只留一个时双击对应的 `关闭789*.bat` |
 | 7899 在跑,国内 200、海外 000 | 机场全关,兜底落到直连 | **海外要翻墙至少开一个机场**;开 ClashVerge / 飞鸟 / TAG |
 | 7899 国内通、海外不通(开着机场) | 机场节点挂了 / 额度满 | 在机场客户端换个节点 |
 | 全局指向 7899,但 7899 = False | exe 被杀,全局焊在死端口 → 全断 | 见下方「应急回退」,再修兜底层 |
-| `git push` 报 `Could not connect ... via 127.0.0.1` | git 的 `http.proxy` 指向死端口 | 见「手动指回活机场」改 git 代理 |
+| `git push` 报 `Could not connect ... via 127.0.0.1` | git 的 `http.proxy` 指向死端口 | 清掉 git 代理,让 git 走 TUN/直连:`git config --global --unset http.proxy`;`git config --global --unset https.proxy` |
 | Postman 等桌面程序连不上 | 缓存了旧的死端口,或被系统代理劫持 | 先**重启该程序**;仍不行就在它自己的 Proxy 设置里关代理 |
 
 ### 四、应急回退(30 秒恢复上网)
@@ -234,28 +238,19 @@ git config --global --unset http.proxy  2>$null
 git config --global --unset https.proxy 2>$null
 ```
 
-恢复上网后,再从容修兜底层,或用下面那段临时指回活机场。**改完都要重开终端。**
+恢复上网后,再从容修 TUN / 节点 / 客户端。**改完都要重开终端。**
 
-### 五、手动把代理指回某个活机场(临时方案)
+### 五、Claude Code 推荐网络方式
 
-假设某个机场端口活着——把下面的 `7897` 换成你要走的端口(ClashVerge `7897`,飞鸟 `7892`,TAG `7890`):
-
-```powershell
-$P='http://127.0.0.1:7897'
-'HTTP_PROXY','HTTPS_PROXY' | % { [Environment]::SetEnvironmentVariable($_,$P,'User') }
-$r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-Set-ItemProperty $r -Name ProxyServer -Value '127.0.0.1:7897'
-Set-ItemProperty $r -Name ProxyEnable -Value 1
-git config --global http.proxy  $P
-git config --global https.proxy $P
-```
-
-> 或者直接双击 `一键对齐代理.bat`,它只会把用户级环境变量指向当前第一个监听的活机场;默认优先级是飞鸟 `7892` > ClashVerge `7897` > TAG `7890`。系统代理仍交给机场客户端自己维护。
-> **改完务必重开 Claude Code 终端 / Qoder** 才生效。
+- 开代理客户端的 **TUN / 虚拟网卡 / Enhanced Mode**。
+- Claude Code 终端里不要设置 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。
+- 不要设置 `ANTHROPIC_BASE_URL` 指向第三方中转,除非你明确知道这会改变服务提供方和信任边界。
+- 用 `查看当前走哪个.bat` 判断默认出口像走哪个端口。
+- 用 `关闭789*.bat` 只保留一个代理客户端,避免多个 TUN/核心同时抢路由。
 
 ### 六、最容易踩的五个坑
 
-1. **环境变量对已运行进程无效**——改了代理一定要重开终端 / Qoder / Postman,否则白改。
+1. **不要给 Claude Code 日常配置代理环境变量**——优先用 TUN;环境变量只用于排查脏配置和清理死端口。
 2. **别复制独立 `mihomo.exe`**——会被 360 秒删;用机场客户端自带的白名单 exe。
 3. **健康检查别用 google**——机场全关时会误判全部不健康,回退到死端口。要用国内地址。
 4. **`.bat` 必须 GBK + CRLF 编码**——UTF-8 / LF 会让 cmd 把中文和 URL 拆碎,报 `'xxx' 不是内部或外部命令`。
