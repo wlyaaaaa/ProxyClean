@@ -37,7 +37,7 @@
 | 飞鸟 DNS | `enhanced-mode: fake-ip`,`fake-ip-range: 198.18.0.1/16`,`fake-ip-filter` 几乎为空;`nameserver` 用 DoH(doh.pub / alidns);`appendSystemDns: true`;`auto-route: false`;TUN MTU 9000 |
 | 飞鸟节点 | Japan-01..10 / USA-01..04,协议 **Vless**,落地端口 **`10346`**(AWS 东京等),延迟正常时 33–128ms |
 | 机场 API 域名 | `***.apiv2.<机场>.com`(脱敏),真实是**中国大陆服务器**(`111.48.x` 段,移动) |
-| 备用梯子 | **TAG**,本质 **Clash Verge Rev 换皮**(`com.tag.lab`);核心 `mihomo-tag.exe`,端口 `7890`,**未常驻运行** |
+| 备用梯子 | **TAG**,本质 **Clash Verge Rev 换皮**(`com.tag.lab`);核心 `mihomo-tag.exe`;当时默认端口 `7890`,当前建议在 GUI 中改为高位端口 `18090`;**未常驻运行** |
 | 家庭网络 | 小米路由 `192.168.31.1`,**中国移动**宽带,公网 IPv4 `120.243.x.x`(脱敏) |
 | 手机 | 独立连同一 WiFi;另装一份**独立**的飞鸟(与电脑不互通) |
 | 配置文件路径 | 飞鸟:`%APPDATA%\FlyingBird\FlyingBird\`(`shared_preferences.json` 是 GUI+core 配置,`profiles\999999.yaml` 是订阅);TAG:`%APPDATA%\com.tag.lab\`(**全部 `TAG_ENC_V2` 加密,见 §6.1**) |
@@ -122,7 +122,7 @@ API主机 /user/getSubscribe 直连可达 = 200
 
 ### 6.1 TAG 的配置文件全加密,无法手改
 `com.tag.lab` 下 `tag.config.yaml` / `settings.yaml` / `runtime.secure.yaml` / `subscription.yaml` **全部是 `TAG_ENC_V2_*` 密文**。**手改任何一个都会损坏它** → TAG 只能在其**自带 GUI** 里设置(模式选规则、若有 DNS 模式同理)。
-- TAG **本就独立**:自己的核心 `mihomo-tag.exe`、端口 `7890`、自己的 DNS,不依赖飞鸟。
+- TAG **本就独立**:自己的核心 `mihomo-tag.exe`、自己的 DNS,不依赖飞鸟。当前建议混合端口改为 `18090`,避开 `7890/7897` 这类容易被 Windows 保留或安全软件拦截的常见端口。
 - **唯一禁忌:飞鸟与 TAG 不要同时开 TUN**——两者都抢 `198.18.0.1/16` fake-ip + 默认路由,必冲突。**用谁开谁。**
 
 ### 6.2 fake-ip 才是对的,redir-host 会坑(重要)
@@ -144,7 +144,7 @@ API主机 /user/getSubscribe 直连可达 = 200
 
 ## 7. 复用:有用的诊断命令(下次新对话直接抄)
 
-> 端口按需替换:飞鸟 `7892`、TAG `7890`。
+> 端口按需替换:飞鸟 `7892`、TAG 当前建议 `18090`。
 
 ```powershell
 # A) 数据面到底通不通(别信 UI 测速):小请求 + 大流量

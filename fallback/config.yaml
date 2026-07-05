@@ -1,14 +1,14 @@
-mixed-port: 7899
+mixed-port: 18099
 allow-lan: false
 mode: rule
 log-level: warning
-external-controller: 127.0.0.1:9899
+external-controller: 127.0.0.1:18199
 # No tun, no DNS hijack -- this is only an HTTP/SOCKS forwarder. Never touches routes/DNS.
 
 proxies:
   - { name: feiniao,    type: http, server: 127.0.0.1, port: 7892 }
-  - { name: clashverge, type: http, server: 127.0.0.1, port: 7897 }
-  - { name: tag,        type: http, server: 127.0.0.1, port: 7890 }
+  - { name: clashverge, type: http, server: 127.0.0.1, port: 18091 }
+  - { name: tag,        type: http, server: 127.0.0.1, port: 18090 }
 
 proxy-groups:
   - name: AUTO

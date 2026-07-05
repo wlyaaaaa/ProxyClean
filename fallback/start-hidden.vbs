@@ -1,4 +1,4 @@
-' start-hidden.vbs -- launch the 7899 fallback mihomo with NO window.
+' start-hidden.vbs -- launch the 18099 fallback mihomo with NO window.
 ' Put this file next to mihomo.exe and config.yaml inside the fallback\ folder.
 Dim ws, fso, sDir
 Set fso = CreateObject("Scripting.FileSystemObject")

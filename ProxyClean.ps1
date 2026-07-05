@@ -82,8 +82,8 @@ function Broadcast-EnvChange(){
 # 想新增机场,在这里加一行 端口 即可(按优先级从上到下)。
 $Airports = [ordered]@{
     'FlyingBird(飞鸟)' = 7892
-    'ClashVerge'       = 7897
-    'TAG'              = 7890
+    'ClashVerge'       = 18091
+    'TAG'              = 18090
 }
 
 function Test-PortAlive([int]$p){

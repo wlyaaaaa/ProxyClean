@@ -46,12 +46,36 @@
 |------|------|
 | **`一键修复网络.bat`** | 自动检测在跑的机场并对齐;没有机场则恢复直连。需要管理员权限。**90% 的情况用这个。** |
 | **`恢复直连.bat`** | 强制恢复直连(关掉所有代理走本地网络),哪怕还有机场在监听。需要管理员权限。 |
-| **`查看当前走哪个.bat`** | 显示 7890/7892/7897 谁在监听、系统代理/环境变量/默认路由,并对比当前默认出口与强制走各端口的出口 IP。 |
-| **`关闭7897-ClashVerge.bat`** | 强制结束 `127.0.0.1:7897` 的 Clash Verge/mihomo 核心,同时关闭 `clash-verge` 托盘界面,并清掉指向 7897 的代理残留。需要管理员权限。 |
+| **`一键刷新WiFi.bat`** | 轻量模拟“重新连一次 WiFi”:清空 DNS 缓存、释放并重新获取 WiFi 地址。不弹管理员权限。 |
+| **`一键重启WiFi网卡.bat`** | 强力模拟“切到手机热点,再切回 WiFi”:自动请求管理员权限,短暂禁用并重新启用 WiFi 网卡。 |
+| **`查看当前走哪个.bat`** | 显示 18090/7892/18091 谁在监听、系统代理/环境变量/默认路由,并对比当前默认出口与强制走各端口的出口 IP。 |
+| **`关闭18091-ClashVerge.bat`** | 强制结束 `127.0.0.1:18091` 的 Clash Verge/mihomo 核心,同时关闭 `clash-verge` 托盘界面,并清掉指向 18091 的代理残留。需要管理员权限。 |
 | **`关闭7892-飞鸟.bat`** | 强制结束 `127.0.0.1:7892` 的飞鸟核心,同时关闭飞鸟界面/服务外壳,并清掉指向 7892 的代理残留。需要管理员权限。 |
-| **`关闭7890-TAG.bat`** | 强制结束 `127.0.0.1:7890` 的 TAG/mihomo 核心,同时关闭 TAG 外壳进程,并清掉指向 7890 的代理残留。需要管理员权限。 |
+| **`关闭18090-TAG.bat`** | 强制结束 `127.0.0.1:18090` 的 TAG/mihomo 核心,同时关闭 TAG 外壳进程,并清掉指向 18090 的代理残留。需要管理员权限。 |
 
 所有脚本输出都按"先结论、后详情"组织。先看顶部的 `Conclusion` / `结论`;下面的表格只是证据和排查细节。
+
+### WiFi 网页打不开,但切热点再切回 WiFi 又好了
+
+这种情况通常不是单纯 DNS。更像是 Windows 的 WiFi、默认路由、DNS 缓存、浏览器连接池或代理 TUN 状态卡住了。
+
+先双击:
+
+```text
+一键刷新WiFi.bat
+```
+
+如果还不行,再双击:
+
+```text
+一键重启WiFi网卡.bat
+```
+
+第二个会弹管理员权限,并且 WiFi 会短暂断开再连回。它不改代理、不改 DNS、不删路由,只做网卡重启和前后诊断。日志会写到桌面,文件名类似:
+
+```text
+WiFi网络-重启WiFi网卡-20260702-195202.txt
+```
 
 ### 命令行 / PowerShell
 
@@ -62,12 +86,18 @@ powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1
 # 强制恢复直连
 powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1 -Direct
 
-# 查看当前默认出口更像走 7892 还是 7897
+# 查看当前默认出口更像走 7892 还是 18091
 powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
 
+# 轻量刷新 WiFi
+powershell -ExecutionPolicy Bypass -File .\WifiRebind.ps1 -Mode SoftReset
+
+# 重启 WiFi 网卡,需要管理员 PowerShell
+powershell -ExecutionPolicy Bypass -File .\WifiRebind.ps1 -Mode AdapterReset
+
 # 强制关闭指定端口对应的本地代理进程
-powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7890 -Label TAG-7890
-powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7897 -Label ClashVerge-7897
+powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 18090 -Label TAG-18090
+powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 18091 -Label ClashVerge-18091
 powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7892 -Label FlyingBird-7892
 ```
 
@@ -96,13 +126,15 @@ WLAN  192.168.31.1            0
 ```powershell
 $Airports = [ordered]@{
     'FlyingBird(飞鸟)' = 7892  # 主梯子
-    'ClashVerge'       = 7897  # 次梯子
-    'TAG'              = 7890
+    'ClashVerge'       = 18091 # 高位安全端口,避开 Windows 保留/保护端口
+    'TAG'              = 18090 # 高位安全端口,需要在 TAG GUI 里同步 mixed-port
     # '你的机场'        = 端口号   # ← 照着加
 }
 ```
 
 > 端口填你代理客户端里的 **混合端口 / mixed-port**(HTTP+SOCKS 二合一的那个)。
+> 本机当前约定:飞鸟 `7892`,TAG `18090`,Clash Verge `18091`。`7890/7897/7891/8001` 这类常见端口可能被 Windows 动态保留或安全软件拦截,不要再作为新配置使用。
+> 旧端口的一键 `.bat` 已清理;若需要应急关闭旧端口,直接调用 `Stop-ProxyPort.ps1 -Port <端口>`。
 
 ## 工作原理 / How it works
 
@@ -126,10 +158,10 @@ $Airports = [ordered]@{
 
 ## ⚠️ 关于 `fallback/`「常驻兜底层」:默认不启用,且不要焊全局
 
-`fallback/` 里有一套"常驻 mihomo 监听固定端口 `7899`、所有应用指向它、它再 fallback 到机场或直连"
+`fallback/` 里有一套"常驻 mihomo 监听固定端口 `18099`、所有应用指向它、它再 fallback 到机场或直连"
 的方案,出发点是想**根治**「机场一关,命令行/Electron/Qoder 就连不上」。
 
-**它的致命问题**:这套方案要求你把 `HTTP_PROXY`/系统代理/git **焊死**到 `7899`,并开机自启一个隐藏的
+**它的致命问题**:这套方案要求你把 `HTTP_PROXY`/系统代理/git **焊死**到 `18099`,并开机自启一个隐藏的
 mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了),你的全局又焊死在它上面,**整机全断,
 比不装还糟**(本项目实测踩过两次)。这正是"把持久设置焊到一个会消失的端口"的典型反例。
 
@@ -138,14 +170,14 @@ mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了)
 
 | 文件 | 作用 |
 |------|------|
-| `fallback/config.yaml` | 兜底 mihomo 配置:`mixed-port: 7899`,`AUTO = fallback[feiniao, clashverge, tag, DIRECT]`,健康检查用国内地址 |
+| `fallback/config.yaml` | 兜底 mihomo 配置:`mixed-port: 18099`,`AUTO = fallback[feiniao, clashverge, tag, DIRECT]`,健康检查用国内地址 |
 | `fallback/start-hidden.vbs` | 无窗口启动器(供开机自启调用),启动机场自带的 mihomo 内核去读本目录配置 |
 | `fallback/代理状态.bat` | 双击查看「现在到底走飞鸟 / TAG / 还是直连」,识破"以为翻墙其实直连"的假象 |
 
 ### ⚠️ 最关键的坑:内核 exe 必须用杀软白名单里的那个
 
 360 / AlibabaProtect 会把**突然出现、又被无窗口拉起的代理 exe** 当木马删除。
-如果你复制一份**独立** `mihomo.exe` 放进 `fallback/`,它会被秒删 → 7899 起不来 →
+如果你复制一份**独立** `mihomo.exe` 放进 `fallback/`,它会被秒删 → 18099 起不来 →
 全局又焊在死端口 → **全断,比不装还糟**(本项目实测踩过两次)。
 
 **正确做法:直接复用你某个机场客户端自带的、已在白名单里的内核 exe**,只让它读 `fallback/config.yaml`。
@@ -164,7 +196,7 @@ mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了)
 (被杀软删 / 没自启 / 崩了),而你的全局又焊死在它上面,**整机直接全断,比不装还糟**。
 
 这与本项目的安全原则(**绝不把持久设置焊到一个会消失的端口**)直接冲突,因此**已删除该教程**。
-`fallback/` 里的文件仅作参考保留;在你没有充分理解并接受上述风险前,**请不要把全局代理焊到 7899**。
+`fallback/` 里的文件仅作参考保留;在你没有充分理解并接受上述风险前,**请不要把全局代理焊到 18099**。
 
 > 如果你确实需要"命令行 / Claude Code 也能稳定走代理",优先使用代理客户端的 TUN / 虚拟网卡 / Enhanced Mode,不要给终端焊代理环境变量。
 
@@ -202,12 +234,12 @@ mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了)
 $r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 "  Enable=$((gp $r).ProxyEnable)  Server=$((gp $r).ProxyServer)"
 "== 端口死活(机场 + 兜底层) =="
-foreach($p in 7890,7892,7897,7899){ "  $p : $([bool](Get-NetTCPConnection -State Listen -LocalPort $p -EA 0))" }
-"== 7890 / 7892 / 7897 当前出口对比 =="
+foreach($p in 18090,7892,18091,18099){ "  $p : $([bool](Get-NetTCPConnection -State Listen -LocalPort $p -EA 0))" }
+"== 18090 / 7892 / 18091 当前出口对比 =="
 powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
-"== 经兜底层 7899 实测 =="
-"  国内 = $(curl.exe -s -o NUL -m8 -w '%{http_code}' -x http://127.0.0.1:7899 http://www.baidu.com)"
-"  海外 = $(curl.exe -s -o NUL -m12 -w '%{http_code}' -x http://127.0.0.1:7899 https://www.google.com/generate_204)"
+"== 经兜底层 18099 实测 =="
+"  国内 = $(curl.exe -s -o NUL -m8 -w '%{http_code}' -x http://127.0.0.1:18099 http://www.baidu.com)"
+"  海外 = $(curl.exe -s -o NUL -m12 -w '%{http_code}' -x http://127.0.0.1:18099 https://www.google.com/generate_204)"
 ```
 
 `200/204` 表示通,`000` 表示连不上。
@@ -218,11 +250,11 @@ powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
 |------|------|------|
 | 终端里存在 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 旧配置把 Claude Code / Node 劫持到某个端口 | 清空这些环境变量,重开终端;日常依赖 TUN,不要给终端配代理 |
 | 环境变量/系统代理都指向活端口,就是连不上 | **终端是旧的**,还揣着改之前的代理值 | **彻底关掉 Claude Code 终端再重开**(环境变量对已运行进程无效) |
-| `7899 : False`(没监听) | 兜底层 mihomo 没起来(被杀 / 没自启) | 双击 `fallback/start-hidden.vbs` 拉起;检查 exe 是否被 360 删 |
-| 7890 / 7892 / 7897 同时跑,不知道走谁 | 多个 TUN/HTTP 代理同时监听,默认路由和应用代理可能各走各的 | 双击 `查看当前走哪个.bat`;需要只留一个时双击对应的 `关闭789*.bat` |
-| 7899 在跑,国内 200、海外 000 | 机场全关,兜底落到直连 | **海外要翻墙至少开一个机场**;开 ClashVerge / 飞鸟 / TAG |
-| 7899 国内通、海外不通(开着机场) | 机场节点挂了 / 额度满 | 在机场客户端换个节点 |
-| 全局指向 7899,但 7899 = False | exe 被杀,全局焊在死端口 → 全断 | 见下方「应急回退」,再修兜底层 |
+| `18099 : False`(没监听) | 兜底层 mihomo 没起来(被杀 / 没自启) | 双击 `fallback/start-hidden.vbs` 拉起;检查 exe 是否被 360 删 |
+| 18090 / 7892 / 18091 同时跑,不知道走谁 | 多个 TUN/HTTP 代理同时监听,默认路由和应用代理可能各走各的 | 双击 `查看当前走哪个.bat`;需要只留一个时双击对应的 `关闭*.bat` |
+| 18099 在跑,国内 200、海外 000 | 机场全关,兜底落到直连 | **海外要翻墙至少开一个机场**;开 ClashVerge / 飞鸟 / TAG |
+| 18099 国内通、海外不通(开着机场) | 机场节点挂了 / 额度满 | 在机场客户端换个节点 |
+| 全局指向 18099,但 18099 = False | exe 被杀,全局焊在死端口 → 全断 | 见下方「应急回退」,再修兜底层 |
 | `git push` 报 `Could not connect ... via 127.0.0.1` | git 的 `http.proxy` 指向死端口 | 清掉 git 代理,让 git 走 TUN/直连:`git config --global --unset http.proxy`;`git config --global --unset https.proxy` |
 | Postman 等桌面程序连不上 | 缓存了旧的死端口,或被系统代理劫持 | 先**重启该程序**;仍不行就在它自己的 Proxy 设置里关代理 |
 

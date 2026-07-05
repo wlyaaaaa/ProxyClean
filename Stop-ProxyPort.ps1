@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Force-stop the local proxy process listening on a specific port, then clean
     proxy leftovers that point at that port.
@@ -71,7 +71,11 @@ function Stop-ExtraProcesses([string[]]$names){
 function Get-DefaultExtraProcessNames([int]$port){
     switch($port){
         7892 { return @('FlyingBird','FlyingBirdCore','FlyingBirdHelperService') }
+        18091 { return @('clash-verge','verge-mihomo') }
         7897 { return @('clash-verge','verge-mihomo') }
+        7891 { return @('clash-verge','verge-mihomo') }
+        8001 { return @('clash-verge','verge-mihomo') }
+        18090 { return @('TAG','tag','mihomo-tag','tag-mihomo') }
         7890 { return @('TAG','tag','mihomo-tag','tag-mihomo') }
         default { return @() }
     }
@@ -176,7 +180,7 @@ if($finalPids.Count -eq 0){
 }
 
 Write-Host "-------------------- Current Ports --------------------" -ForegroundColor White
-Get-NetTCPConnection -State Listen -LocalPort 7890,7892,7897 -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -State Listen -LocalPort 18090,7890,7892,18091,7897,7891,8001 -ErrorAction SilentlyContinue |
     Select-Object LocalAddress,LocalPort,OwningProcess |
     Format-Table -AutoSize
 
