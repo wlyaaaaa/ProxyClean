@@ -78,14 +78,6 @@ function Broadcast-EnvChange(){
     [User32.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [IntPtr]::Zero, "Environment", 2, 200, [ref]$result) | Out-Null
 }
 
-# ── 机场定义:名字 -> 混合端口(mixed-port) ────────────────────────────────
-# 想新增机场,在这里加一行 端口 即可(按优先级从上到下)。
-$Airports = [ordered]@{
-    'FlyingBird(飞鸟)' = 7892
-    'ClashVerge'       = 18091
-    'TAG'              = 18090
-}
-
 function Test-PortAlive([int]$p){
     try {
         # 使用 .NET 方式获取监听端口,避免 WMI/CIM 潜在的死锁/卡顿问题
@@ -96,25 +88,75 @@ function Test-PortAlive([int]$p){
     }
 }
 
+function Get-LocalProxyPorts([string]$value){
+    if([string]::IsNullOrWhiteSpace($value)){ return @() }
+    @([regex]::Matches($value, '(?i)(?:127\.0\.0\.1|localhost):(\d{2,5})') |
+        ForEach-Object { [int]$_.Groups[1].Value } |
+        Select-Object -Unique)
+}
+
+function Get-ListenerOwnerName([int]$port){
+    $connections = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+    $names = @($connections | ForEach-Object {
+        (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+    } | Where-Object { $_ } | Select-Object -Unique)
+    if($names.Count -gt 0){ return ($names -join ' / ') }
+    return "local-proxy:$port"
+}
+
 Write-Host "==================== ProxyClean ====================" -ForegroundColor White
 
-# ── 1) 判定目标:直连 / 某个在跑的机场 ───────────────────────────────────
-$targetName = $null; $targetPort = $null
+# ── 1) 判定目标:直连 / 当前系统代理 / 活动 TUN ───────────────────────────
+# 不维护任何客户端固定端口表。普通代理模式以客户端当前发布的 WinINET
+# 端点为准；TUN 模式以仍然 Up 的 fake-ip 默认路由为准。
+$reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+$pp = Get-ItemProperty -Path $reg -ErrorAction SilentlyContinue
+$adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue)
+$adMap = @{}
+foreach($ad in $adapters){
+    if($null -ne $ad.InterfaceIndex){ $adMap[$ad.InterfaceIndex] = $ad }
+}
+$allDef = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+$activeTunRoutes = @($allDef | Where-Object {
+    $_.NextHop -match '^198\.1[89]\.' -and
+    $adMap[$_.ifIndex] -and
+    $adMap[$_.ifIndex].Status -eq 'Up'
+})
+$publishedPorts = if($pp -and [int]$pp.ProxyEnable -eq 1){
+    @(Get-LocalProxyPorts ([string]$pp.ProxyServer))
+} else { @() }
+$livePublishedPorts = @($publishedPorts | Where-Object { Test-PortAlive $_ })
+
+$targetName = $null; $targetPort = $null; $targetActive = $false
 if($Direct){
     Info "模式:强制直连"
 } else {
-    foreach($name in $Airports.Keys){
-        if(Test-PortAlive $Airports[$name]){ $targetName=$name; $targetPort=$Airports[$name]; break }
+    if($livePublishedPorts.Count -gt 0){
+        $targetPort = [int]$livePublishedPorts[0]
+        $targetName = Get-ListenerOwnerName $targetPort
+        $targetActive = $true
+        Info "检测到活动系统代理:$targetName (127.0.0.1:$targetPort)"
     }
-    if($targetPort){ Info "检测到在跑的机场:$targetName (127.0.0.1:$targetPort)" }
-    else { Info "没有任何机场在监听 -> 目标:直连" }
+    if($activeTunRoutes.Count -gt 0){
+        $tunNames = @($activeTunRoutes.InterfaceAlias | Select-Object -Unique)
+        $targetActive = $true
+        if($targetName){
+            Warn ("同时存在系统代理和活动 TUN({0});本工具只清死端口,不会替你选择或关闭客户端。" -f ($tunNames -join ' / '))
+        }
+        else {
+            $targetName = 'TUN:' + ($tunNames -join ' / ')
+            Info "检测到活动 TUN:$($tunNames -join ' / ')"
+        }
+    }
+    if(-not $targetActive){ Info "没有活动系统代理或 TUN -> 目标:直连" }
 }
 
 Write-Host "-------------------- 结论 --------------------" -ForegroundColor White
 if($Direct){
     Write-Host "本次将强制恢复直连:关闭系统代理、清空代理环境变量,并清理残留路由/DNS。" -ForegroundColor Yellow
-} elseif($targetPort){
-    Write-Host "本次目标:保留正在运行的 $targetName (127.0.0.1:$targetPort),只清理死端口和残留项。" -ForegroundColor Green
+} elseif($targetActive){
+    $endpointText = if($targetPort){ " (127.0.0.1:$targetPort)" } else { '' }
+    Write-Host "本次目标:保留正在运行的 $targetName$endpointText,只清理死端口和残留项。" -ForegroundColor Green
 } else {
     Write-Host "本次目标:没有检测到活机场,将按直连状态清理死端口和残留项。" -ForegroundColor Yellow
 }
@@ -127,20 +169,12 @@ Write-Host "-------------------- 详细输出 --------------------" -ForegroundC
 #   • 正在用、网卡 Up 的机场 TUN 路由(fake-ip)会被保留 —— 仅在"直连模式"下才清它。
 #   • 【硬保护】若当前一条健康物理默认路由都没有,则本次【不删任何路由】并告警 ——
 #     此时删任何东西都可能让你彻底断网(这正是旧版误删 WLAN 路由、要重置网络的根因)。
-# 预先获取一次所有网卡状态,避免在循环中重复调用 Get-NetAdapter 导致严重的 WMI/CIM 卡顿
-$adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue)
-$adMap = @{}
-foreach($ad in $adapters){
-    if($ad.InterfaceIndex -ne $null){
-        $adMap[$ad.InterfaceIndex] = $ad
-    }
-}
+# 网卡和默认路由已在目标判定阶段读取一次，避免重复 WMI/CIM 查询。
 
 function Test-HealthyPhysRoute($r){
     $ad = $adMap[$r.ifIndex]
     return ($ad -and $ad.Status -eq 'Up') -and ($r.NextHop -ne '0.0.0.0') -and ($r.NextHop -notmatch '^198\.1[89]\.')
 }
-$allDef  = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
 $healthy = @($allDef | Where-Object { Test-HealthyPhysRoute $_ })
 $removed = 0
 if($healthy.Count -lt 1){
@@ -154,7 +188,7 @@ if($healthy.Count -lt 1){
         $kill = $false; $why = ''
         if(-not $ad)                { $kill = $true; $why = "网卡已消失(残留路由)" }
         elseif($ad.Status -ne 'Up') { $kill = $true; $why = "网卡已 Down(黑洞)" }
-        elseif($isFakeip -and ($targetPort -eq $null)){ $kill = $true; $why = "直连模式下残留的 fake-ip TUN 路由($($r.NextHop))" }
+        elseif($isFakeip -and (-not $targetActive)){ $kill = $true; $why = "直连模式下残留的 fake-ip TUN 路由($($r.NextHop))" }
         if($kill){
             try { Remove-NetRoute -InputObject $r -Confirm:$false -ErrorAction Stop
                   Ok "移除孤儿默认路由 via $($r.NextHop) ($($r.InterfaceAlias)) —— $why"; $removed++ }
@@ -170,8 +204,7 @@ $phys = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinu
 if(-not $phys){ Warn "当前没有可用的默认路由!请检查物理网络(WLAN/以太网)是否已连接。" }
 
 # ── 3) 修正持久代理:env / 系统代理(绝不焊死端口) ────────────────────────────────
-$reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-$envVars = 'HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'
+$envVars = 'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'
 
 # 判定"一个代理串是否 = 已死的本地端口"。本工具铁律:只在代理指向【死掉的本地端口】
 # (机场一关就全断的元凶)时才清它;指向活端口或远程代理一律不动;且【永不主动设置代理】。

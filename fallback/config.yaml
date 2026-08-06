@@ -3,23 +3,8 @@ allow-lan: false
 mode: rule
 log-level: warning
 external-controller: 127.0.0.1:18199
-# No tun, no DNS hijack -- this is only an HTTP/SOCKS forwarder. Never touches routes/DNS.
-
-proxies:
-  - { name: feiniao,    type: http, server: 127.0.0.1, port: 7892 }
-  - { name: clashverge, type: http, server: 127.0.0.1, port: 18091 }
-  - { name: tag,        type: http, server: 127.0.0.1, port: 18090 }
-
-proxy-groups:
-  - name: AUTO
-    type: fallback
-    proxies: [feiniao, clashverge, tag, DIRECT]
-    # Health-check URL MUST be a domestic site: it only probes whether the upstream port is alive.
-    # With google, when both airports are off, feiniao/tag/DIRECT all test unhealthy and fallback
-    # would hit the first (dead) port again -> outage. baidu keeps DIRECT healthy so it lands on direct.
-    url: http://www.baidu.com
-    interval: 30
-    lazy: false
+# Retired reference only: no TUN, DNS hijack, static proxy-client upstream, or auto-start.
+# If manually launched, this listener is DIRECT-only and must never be set as a persistent global proxy.
 
 rules:
-  - MATCH,AUTO
+  - MATCH,DIRECT
