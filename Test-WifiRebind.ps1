@@ -28,11 +28,15 @@ if (Test-Path -LiteralPath $ScriptPath) {
     Assert-True ($content -match '\$Mode\s*=\s*"Diagnose"') "Default mode should be Diagnose"
     Assert-True ($content -match 'Disable-NetAdapter') "AdapterReset should disable the selected WiFi adapter"
     Assert-True ($content -match 'Enable-NetAdapter') "AdapterReset should re-enable the selected WiFi adapter"
+    Assert-True ($content -match 'Disable-NetAdapter[^\r\n]+-ErrorAction\s+Stop') "AdapterReset should fail closed when disabling the WiFi adapter fails"
+    Assert-True ($content -match 'Enable-NetAdapter[^\r\n]+-ErrorAction\s+Stop') "AdapterReset should detect a failed WiFi re-enable"
+    Assert-True ($content -match 'adapterEnableSucceeded' -and $content -match 'exit\s+5') "AdapterReset should not report success after a failed WiFi re-enable"
     Assert-True ($content -match 'ipconfig\s*/flushdns') "Soft reset should flush DNS"
     Assert-True ($content -notmatch 'route\s+delete') "Script should not delete routes"
     Assert-True ($content -notmatch 'Set-DnsClientServerAddress') "Script should not change DNS servers"
     Assert-True ($content -notmatch 'Stop-Service') "Script should not stop services"
     Assert-True ($content -notmatch 'Stop-Process') "Script should not kill processes"
+    Assert-True ($content -match 'GetFolderPath\(\[Environment\+SpecialFolder\]::Desktop\)') "Logs should use the Windows-resolved Desktop path"
 
     $hasBoundCurl = $content -match '--interface\s+\$wifiIp' -and $content -match '--noproxy\s+"\*"'
     Assert-True $hasBoundCurl "Diagnostics should include a WiFi-bound curl check that bypasses proxies"

@@ -19,7 +19,11 @@ $modeNames = @{
 }
 
 $logMode = $modeNames[$Mode]
-$logPath = Join-Path $env:USERPROFILE "Desktop\WiFi网络-$logMode-$stamp.txt"
+$desktopPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::Desktop)
+if ([string]::IsNullOrWhiteSpace($desktopPath)) {
+    $desktopPath = Join-Path $env:USERPROFILE "Desktop"
+}
+$logPath = Join-Path $desktopPath "WiFi网络-$logMode-$stamp.txt"
 
 function Write-Log {
     param([string]$Text = "")
@@ -201,14 +205,32 @@ if ($Mode -eq "AdapterReset") {
         exit 3
     }
 
+    $script:adapterDisableSucceeded = $false
+    $script:adapterEnableSucceeded = $false
     Add-Section "重启 WiFi 网卡 - 禁用网卡" {
-        Disable-NetAdapter -Name $wifiAlias -Confirm:$false
+        Disable-NetAdapter -Name $wifiAlias -Confirm:$false -ErrorAction Stop
+        $script:adapterDisableSucceeded = $true
+    }
+    if (-not $script:adapterDisableSucceeded) {
+        Write-Log "禁用 WiFi 网卡失败，未继续执行重启。"
+        Write-Log "日志: $logPath"
+        exit 4
     }
 
-    Start-Sleep -Seconds 3
-
-    Add-Section "重启 WiFi 网卡 - 启用网卡" {
-        Enable-NetAdapter -Name $wifiAlias -Confirm:$false
+    try {
+        Start-Sleep -Seconds 3
+    }
+    finally {
+        # 禁用成功后始终尝试重新启用；失败时不得继续冒充重启成功。
+        Add-Section "重启 WiFi 网卡 - 启用网卡" {
+            Enable-NetAdapter -Name $wifiAlias -Confirm:$false -ErrorAction Stop
+            $script:adapterEnableSucceeded = $true
+        }
+    }
+    if (-not $script:adapterEnableSucceeded) {
+        Write-Log "重新启用 WiFi 网卡失败。请立即在管理员 PowerShell 中运行: Enable-NetAdapter -Name '$wifiAlias'"
+        Write-Log "日志: $logPath"
+        exit 5
     }
 
     Start-Sleep -Seconds $WaitSeconds

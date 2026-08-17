@@ -13,8 +13,9 @@ $systemProxy = Get-ItemProperty -Path $reg -ErrorAction SilentlyContinue
 
 function Get-LocalProxyPorts([string]$value){
     if([string]::IsNullOrWhiteSpace($value)){ return @() }
-    @([regex]::Matches($value, '(?i)(?:127\.0\.0\.1|localhost):(?<port>\d{2,5})') |
+    @([regex]::Matches($value, '(?i)(?<![a-z0-9_.-])(?:127\.0\.0\.1|localhost|\[::1\])\s*:\s*(?<port>\d{1,5})(?!\d)') |
         ForEach-Object { [int]$_.Groups['port'].Value } |
+        Where-Object { $_ -ge 1 -and $_ -le 65535 } |
         Select-Object -Unique)
 }
 
@@ -31,11 +32,11 @@ function Get-DockerProxySnapshot {
         return [pscustomobject][ordered]@{ exists=$false; path=$path; local_manual_pin_present=$false }
     }
     try {
-        $settings = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 100
+        $settings = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
         $localOverrides = @(
             foreach($name in 'OverrideProxyHTTP','OverrideProxyHTTPS','ContainersOverrideProxyHTTP','ContainersOverrideProxyHTTPS'){
                 $property = $settings.PSObject.Properties[$name]
-                if($property -and [string]$property.Value -match '(?i)(?:127\.0\.0\.1|localhost):\d{2,5}'){
+                if($property -and [string]$property.Value -match '(?i)(?<![a-z0-9_.-])(?:127\.0\.0\.1|localhost|\[::1\])\s*:\s*\d{1,5}(?!\d)'){
                     [pscustomobject][ordered]@{ setting=$name; endpoint=[string]$property.Value }
                 }
             }
@@ -55,7 +56,7 @@ function Get-DockerProxySnapshot {
                 if($line -match 'host will use proxy:\s+app settings'){ $runtimeMode = 'manual' }
                 elseif($line -match 'host will use proxy:\s+static system'){ $runtimeMode = 'system' }
                 elseif($line -match 'host will use proxy:\s+disabled'){ $runtimeMode = 'disabled' }
-                $endpointMatch = [regex]::Match([string]$line, '(?i)(?:127\.0\.0\.1|localhost):\d{2,5}')
+                $endpointMatch = [regex]::Match([string]$line, '(?i)(?<![a-z0-9_.-])(?:127\.0\.0\.1|localhost|\[::1\])\s*:\s*\d{1,5}(?!\d)')
                 if($endpointMatch.Success){ $runtimeLocalEndpoint = $endpointMatch.Value }
             }
         }

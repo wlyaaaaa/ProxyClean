@@ -22,9 +22,8 @@ function Warn($m){ Write-Host "[!] $m" -ForegroundColor Yellow }
 
 function Test-LocalProxyForPort([string]$value, [int]$port){
     if([string]::IsNullOrWhiteSpace($value)){ return $false }
-    if($value -notmatch '(?i)(127\.0\.0\.1|localhost)'){ return $false }
-    return [bool]([regex]::Matches($value, ':(\d{2,5})') |
-        Where-Object { [int]$_.Groups[1].Value -eq $port })
+    $pattern = '(?i)(?<![a-z0-9_.-])(?:127\.0\.0\.1|localhost|\[::1\])\s*:\s*' + $port + '(?!\d)'
+    return [regex]::IsMatch($value, $pattern)
 }
 
 function Get-ListeningPids([int]$port){

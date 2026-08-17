@@ -80,19 +80,69 @@ function Broadcast-EnvChange(){
 
 function Test-PortAlive([int]$p){
     try {
-        # 使用 .NET 方式获取监听端口,避免 WMI/CIM 潜在的死锁/卡顿问题
+        # 只把本机回环/通配地址上的监听视为本地代理。仅端口相同但绑定在其他网卡上，
+        # 并不代表 127.0.0.1:<port> 可用。
         $listeners = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
-        return [bool]($listeners | Where-Object { $_.Port -eq $p })
+        return [bool]($listeners | Where-Object {
+            $_.Port -eq $p -and (
+                [Net.IPAddress]::IsLoopback($_.Address) -or
+                $_.Address.Equals([Net.IPAddress]::Any) -or
+                $_.Address.Equals([Net.IPAddress]::IPv6Any)
+            )
+        })
     } catch {
-        return [bool](Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue)
+        return [bool](Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalAddress -in @('127.0.0.1', '::1', '0.0.0.0', '::') })
     }
 }
 
-function Get-LocalProxyPorts([string]$value){
+function Get-ProxyEndpoints([string]$value){
     if([string]::IsNullOrWhiteSpace($value)){ return @() }
-    @([regex]::Matches($value, '(?i)(?:127\.0\.0\.1|localhost):(\d{2,5})') |
-        ForEach-Object { [int]$_.Groups[1].Value } |
-        Select-Object -Unique)
+
+    @(
+        foreach($rawPart in ($value -split ';')){
+            $part = $rawPart.Trim()
+            if(-not $part){ continue }
+
+            # WinINET 可使用 http=host:port;https=host:port，环境变量通常是 URI。
+            $endpoint = if($part -match '^[a-z][a-z0-9+.-]*=(.*)$'){
+                $Matches[1].Trim()
+            } else {
+                $part
+            }
+            if(-not $endpoint){
+                [pscustomobject]@{ parsed=$false; local=$false; host=$null; port=$null }
+                continue
+            }
+
+            $candidate = if($endpoint -match '^[a-z][a-z0-9+.-]*://'){
+                $endpoint
+            } else {
+                'http://' + $endpoint
+            }
+            [Uri]$uri = $null
+            if([Uri]::TryCreate($candidate, [UriKind]::Absolute, [ref]$uri) -and
+               -not [string]::IsNullOrWhiteSpace($uri.Host) -and
+               $uri.Port -ge 1 -and $uri.Port -le 65535){
+                $endpointHost = ([string]$uri.Host).Trim([char[]]@('[', ']'))
+                [Net.IPAddress]$endpointAddress = $null
+                $isLocal = $endpointHost -ieq 'localhost'
+                if([Net.IPAddress]::TryParse($endpointHost, [ref]$endpointAddress)){
+                    $isLocal = $endpointAddress.Equals([Net.IPAddress]::Loopback) -or
+                        $endpointAddress.Equals([Net.IPAddress]::IPv6Loopback)
+                }
+                [pscustomobject]@{ parsed=$true; local=$isLocal; host=$endpointHost; port=[int]$uri.Port }
+            } else {
+                [pscustomobject]@{ parsed=$false; local=$false; host=$null; port=$null }
+            }
+        }
+    )
+}
+
+function Get-LocalProxyPorts([string]$value){
+    @(Get-ProxyEndpoints $value |
+        Where-Object { $_.parsed -and $_.local } |
+        Select-Object -ExpandProperty port -Unique)
 }
 
 function Get-ListenerOwnerName([int]$port){
@@ -209,12 +259,47 @@ $envVars = 'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','al
 # 判定"一个代理串是否 = 已死的本地端口"。本工具铁律:只在代理指向【死掉的本地端口】
 # (机场一关就全断的元凶)时才清它;指向活端口或远程代理一律不动;且【永不主动设置代理】。
 function Test-LocalProxyDead([string]$s){
-    if(-not $s){ return $false }
-    if($s -notmatch '127\.0\.0\.1|localhost'){ return $false }   # 非本地代理:不擅自判断,不碰
-    $ports = [regex]::Matches($s, ':(\d{2,5})') | ForEach-Object { [int]$_.Groups[1].Value } | Select-Object -Unique
-    if(-not $ports){ return $false }
-    foreach($p in $ports){ if(Test-PortAlive $p){ return $false } }  # 任一端口活着 → 不算死
+    $endpoints = @(Get-ProxyEndpoints $s)
+    if($endpoints.Count -eq 0){ return $false }
+    # 混合了远程端点或无法安全解析时，不能为了清本地死端口而删除整项配置。
+    if(@($endpoints | Where-Object { -not $_.parsed -or -not $_.local }).Count -gt 0){ return $false }
+    foreach($endpoint in $endpoints){
+        if(Test-PortAlive $endpoint.port){ return $false }
+    }
     return $true
+}
+
+function Clear-GitProxySettings([switch]$ForceDirect){
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if(-not $git){ return }
+
+    $found = $false
+    $kept = $false
+    foreach($key in 'http.proxy','https.proxy'){
+        $values = @((& git config --global --get-all $key) 2>$null |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if($values.Count -eq 0){ continue }
+        $found = $true
+        $deadValues = @($values | Where-Object { Test-LocalProxyDead ([string]$_) })
+
+        if($ForceDirect -or $deadValues.Count -eq $values.Count){
+            & git config --global --unset-all $key 2>$null
+            if($LASTEXITCODE -eq 0){
+                if($ForceDirect){ Ok "已按直连模式清除 git $key" }
+                else { Ok "已清掉指向死端口的 git $key (改成直连)" }
+            } else {
+                Warn "无法清理 git $key;请检查全局 git 配置是否可写"
+            }
+        } elseif($deadValues.Count -gt 0){
+            $kept = $true
+            Warn "git $key 同时含远程/可用项与死本地项;为避免误删远程代理，保持不动"
+        } else {
+            $kept = $true
+        }
+    }
+
+    if(-not $found){ Info "git 代理本来就没设(直连)" }
+    elseif($kept){ Info "其余 git 代理端点仍可用/是远程代理 —— 保持不动" }
 }
 
 # 3a) 环境变量(命令行 / Claude Code / curl / Node 读它):只清掉"指向死本地端口"的;
@@ -251,18 +336,8 @@ if($Direct){
 }
 # 注:NO_PROXY 始终不动(里面有 aliyun 等白名单)。本工具永不主动开启/指定系统代理端口。
 
-# ── 3b) git 代理:只清死端口(git 有自己的 http.proxy)──────────
-$git = Get-Command git -ErrorAction SilentlyContinue
-if($git){
-    $gp = (git config --global --get http.proxy); $gps = (git config --global --get https.proxy)
-    $gitVal = if($gp){ $gp } else { $gps }
-    if($gitVal -and ($Direct -or (Test-LocalProxyDead $gitVal))){
-        & git config --global --unset http.proxy  2>$null
-        & git config --global --unset https.proxy 2>$null
-        Ok "已清掉指向死端口的 git 代理(改成直连)"
-    } elseif($gitVal){ Info "git 代理指向的端口还活着/是远程代理 —— 保持不动" }
-    else { Info "git 代理本来就没设(直连)" }
-}
+# ── 3b) git 代理:逐项只清死端口(git 有独立的 http.proxy / https.proxy)──────────
+Clear-GitProxySettings -ForceDirect:$Direct
 
 # ── 4) 刷新 DNS + 通知 WinINET 设置已变 ──────────────────────────────────
 try { ipconfig /flushdns | Out-Null; Ok "已刷新 DNS 缓存" } catch {}
