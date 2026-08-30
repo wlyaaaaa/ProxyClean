@@ -26,8 +26,18 @@ function Test-LocalProxyForPort([string]$value, [int]$port){
     return [regex]::IsMatch($value, $pattern)
 }
 
+function Test-LocalListenAddress([string]$address){
+    if([string]::IsNullOrWhiteSpace($address)){ return $false }
+    [Net.IPAddress]$parsed = $null
+    if(-not [Net.IPAddress]::TryParse($address, [ref]$parsed)){ return $false }
+    return [Net.IPAddress]::IsLoopback($parsed) -or
+        $parsed.Equals([Net.IPAddress]::Any) -or
+        $parsed.Equals([Net.IPAddress]::IPv6Any)
+}
+
 function Get-ListeningPids([int]$port){
     @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
+        Where-Object { Test-LocalListenAddress ([string]$_.LocalAddress) } |
         Select-Object -ExpandProperty OwningProcess -Unique |
         Where-Object { $_ -and $_ -gt 0 })
 }

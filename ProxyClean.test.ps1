@@ -46,8 +46,10 @@ Assert-True ($fallback -match 'MATCH,DIRECT') 'The retired fallback is not DIREC
 
 # 只导入函数定义，不执行会清代理/路由的主脚本。
 $global:ProxyCleanTestAlivePorts = @()
+$global:ProxyCleanTestListeners = @()
 $moduleSource = @(
     'function Test-PortAlive([int]$p){ return $global:ProxyCleanTestAlivePorts -contains $p }'
+    'function Get-NetTCPConnection { [CmdletBinding()] param([string]$State, [int]$LocalPort) @($global:ProxyCleanTestListeners | Where-Object { $_.LocalPort -eq $LocalPort }) }'
     'function Info($m){}'
     'function Ok($m){}'
     'function Warn($m){}'
@@ -55,8 +57,10 @@ $moduleSource = @(
     (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Test-LocalProxyDead')
     (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Clear-GitProxySettings')
     (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Test-LocalProxyForPort')
+    (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Test-LocalListenAddress')
+    (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Get-ListeningPids')
     (Get-FunctionDefinitionText (Join-Path $root 'ProxyStatus.ps1') 'Get-LocalProxyPorts')
-    'Export-ModuleMember -Function Get-ProxyEndpoints,Test-LocalProxyDead,Clear-GitProxySettings,Test-LocalProxyForPort,Get-LocalProxyPorts'
+    'Export-ModuleMember -Function Get-ProxyEndpoints,Test-LocalProxyDead,Clear-GitProxySettings,Test-LocalProxyForPort,Get-ListeningPids,Get-LocalProxyPorts'
 ) -join "`n"
 $testModule = New-Module -Name ("ProxyClean.UnitTests.{0}" -f [Guid]::NewGuid().ToString('N')) -ScriptBlock ([ScriptBlock]::Create($moduleSource))
 Import-Module $testModule -Force
@@ -75,6 +79,18 @@ Assert-True (-not (Test-LocalProxyForPort 'http://mylocalhost:7892' 7892)) 'A ho
 Assert-True (@(Get-LocalProxyPorts 'http=mylocalhost:7892').Count -eq 0) 'ProxyStatus must not mistake a hostname suffix for localhost.'
 Assert-True (@(Get-LocalProxyPorts 'http=[::1]:7892') -contains 7892) 'ProxyStatus should recognize an IPv6 loopback endpoint.'
 Assert-True (@(Get-LocalProxyPorts 'http=localhost:99999').Count -eq 0) 'ProxyStatus must reject an invalid TCP port.'
+
+$global:ProxyCleanTestListeners = @(
+    [pscustomobject]@{ LocalPort=7892; LocalAddress='127.0.0.1'; OwningProcess=101 }
+    [pscustomobject]@{ LocalPort=7892; LocalAddress='::1'; OwningProcess=102 }
+    [pscustomobject]@{ LocalPort=7892; LocalAddress='0.0.0.0'; OwningProcess=103 }
+    [pscustomobject]@{ LocalPort=7892; LocalAddress='::'; OwningProcess=104 }
+    [pscustomobject]@{ LocalPort=7892; LocalAddress='192.168.1.50'; OwningProcess=201 }
+    [pscustomobject]@{ LocalPort=7892; LocalAddress='10.0.0.25'; OwningProcess=202 }
+)
+$localListenerPids = @(Get-ListeningPids 7892)
+Assert-True (@($localListenerPids | Where-Object { $_ -in 101,102,103,104 }).Count -eq 4) 'Loopback and wildcard listeners should remain eligible for the requested local proxy port.'
+Assert-True (@($localListenerPids | Where-Object { $_ -in 201,202 }).Count -eq 0) 'A listener bound only to a LAN address must not be stopped as a local proxy endpoint.'
 
 $testConfigDir = Join-Path ([IO.Path]::GetTempPath()) 'Codex'
 $testConfig = Join-Path $testConfigDir ("proxyclean-test-{0}.gitconfig" -f [Guid]::NewGuid().ToString('N'))
@@ -98,6 +114,7 @@ finally {
 }
 Remove-Module $testModule -Force
 Remove-Variable -Name ProxyCleanTestAlivePorts -Scope Global -ErrorAction SilentlyContinue
+Remove-Variable -Name ProxyCleanTestListeners -Scope Global -ErrorAction SilentlyContinue
 
 $statusJson = & (Join-Path $root 'ProxyStatus.ps1') -SkipExitProbe -Json
 $statusSucceeded = $?
