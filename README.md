@@ -49,6 +49,8 @@
 | **`一键刷新WiFi.bat`** | 轻量模拟“重新连一次 WiFi”:清空 DNS 缓存、释放并重新获取 WiFi 地址。不弹管理员权限。 |
 | **`一键重启WiFi网卡.bat`** | 强力模拟“切到手机热点,再切回 WiFi”:自动请求管理员权限,短暂禁用并重新启用 WiFi 网卡。 |
 | **`查看当前走哪个.bat`** | 动态发现 WinINET 当前端点、代理内核监听和活动 TUN 路由,审计 Docker Desktop 等消费端是否仍固定本地端口，并对比当前默认出口与已发现端点的出口 IP；不依赖固定端口表。 |
+| **`IPv6状态.bat`** | 只读查看活动网卡的 IPv6 绑定和 `::/0` 默认路由，判断应用是否可能绕过仅接管 IPv4 的代理。 |
+| **`IPv6切换.bat`** | 在物理上网网卡上切换 IPv6；保留 `natpierce`、Tailscale、WSL 和其他虚拟网卡。需要管理员权限。 |
 | **`关闭18091-ClashVerge.bat`** | 强制结束 `127.0.0.1:18091` 的 Clash Verge/mihomo 核心,同时关闭 `clash-verge` 托盘界面,并清掉指向 18091 的代理残留。需要管理员权限。 |
 | **`关闭7892-飞鸟.bat`** | 强制结束 `127.0.0.1:7892` 的飞鸟核心,同时关闭飞鸟界面/服务外壳,并清掉指向 7892 的代理残留。需要管理员权限。 |
 | **`关闭18090-TAG.bat`** | 强制结束 `127.0.0.1:18090` 的 TAG/mihomo 核心,同时关闭 TAG 外壳进程,并清掉指向 18090 的代理残留。需要管理员权限。 |
@@ -88,6 +90,10 @@ powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1 -Direct
 
 # 动态查看当前系统代理、代理内核监听、TUN 路由和出口
 powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
+
+# 查看或切换物理上网网卡的 IPv6
+powershell -ExecutionPolicy Bypass -File .\IPv6-Status.ps1
+powershell -ExecutionPolicy Bypass -File .\IPv6-Toggle.ps1
 
 # 轻量刷新 WiFi
 powershell -ExecutionPolicy Bypass -File .\WifiRebind.ps1 -Mode SoftReset

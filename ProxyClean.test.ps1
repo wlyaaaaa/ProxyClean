@@ -21,7 +21,7 @@ function Get-FunctionDefinitionText([string]$path, [string]$name){
     return $definition.Extent.Text
 }
 
-foreach($name in 'ProxyClean.ps1','ProxyStatus.ps1','Stop-ProxyPort.ps1'){
+foreach($name in 'ProxyClean.ps1','ProxyStatus.ps1','Stop-ProxyPort.ps1','IPv6-Status.ps1','IPv6-Toggle.ps1'){
     $path = Join-Path $root $name
     $tokens = $null
     $errors = $null
@@ -32,6 +32,8 @@ foreach($name in 'ProxyClean.ps1','ProxyStatus.ps1','Stop-ProxyPort.ps1'){
 $clean = Get-Content -LiteralPath (Join-Path $root 'ProxyClean.ps1') -Raw
 $status = Get-Content -LiteralPath (Join-Path $root 'ProxyStatus.ps1') -Raw
 $fallback = Get-Content -LiteralPath (Join-Path $root 'fallback\config.yaml') -Raw
+$ipv6Status = Get-Content -LiteralPath (Join-Path $root 'IPv6-Status.ps1') -Raw
+$ipv6Toggle = Get-Content -LiteralPath (Join-Path $root 'IPv6-Toggle.ps1') -Raw
 $runtimeScripts = $clean + "`n" + $status
 
 Assert-True ($clean -notmatch '\$Airports') 'ProxyClean still contains the legacy fixed client-port table.'
@@ -43,6 +45,10 @@ Assert-True ($status -match 'Get-DockerProxySnapshot') 'ProxyStatus does not aud
 Assert-True ($status -notmatch 'ConvertFrom-Json\s+-Depth') 'ProxyStatus uses a PowerShell 7-only ConvertFrom-Json parameter.'
 Assert-True ($fallback -notmatch '(?<!\d)(?:7892|18090|18091)(?!\d)') 'The retired fallback still contains fixed proxy-client ports.'
 Assert-True ($fallback -match 'MATCH,DIRECT') 'The retired fallback is not DIRECT-only.'
+Assert-True ($ipv6Status -match "Get-NetRoute\s+-DestinationPrefix\s+'::/0'") 'IPv6 status must report the Internet default route.'
+Assert-True ($ipv6Toggle -match 'natpierce' -and $ipv6Toggle -match 'Tailscale' -and $ipv6Toggle -match 'vEthernet') 'IPv6 toggle must preserve the registered tunnel and virtual adapters.'
+Assert-True ($ipv6Toggle -match 'HardwareInterface\s+-eq\s+\$true') 'IPv6 toggle must select physical hardware adapters, not unlisted TUN adapters.'
+Assert-True ($ipv6Toggle -match 'Disable-NetAdapterBinding' -and $ipv6Toggle -match 'Enable-NetAdapterBinding') 'IPv6 toggle must retain both reversible directions.'
 
 # 只导入函数定义，不执行会清代理/路由的主脚本。
 $global:ProxyCleanTestAlivePorts = @()
@@ -126,7 +132,7 @@ Assert-True ($null -ne $snapshot.docker_proxy) 'ProxyStatus did not return Docke
 
 [pscustomobject][ordered]@{
     status = 'pass'
-    parser_files = 3
+    parser_files = 5
     fixed_runtime_client_ports = 0
     observed_system_proxy = $snapshot.system_proxy
     observed_tun_route_count = @($snapshot.tun_routes).Count
