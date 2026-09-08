@@ -59,6 +59,8 @@ $moduleSource = @(
     'function Info($m){}'
     'function Ok($m){}'
     'function Warn($m){}'
+    'function Remove-NetRoute { [CmdletBinding(SupportsShouldProcess=$true)] param($InputObject) $script:RemovedRoutes += $InputObject }'
+    (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Test-HealthyPhysRoute')
     (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Get-ProxyEndpoints')
     (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Test-LocalProxyDead')
     (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Clear-GitProxySettings')
@@ -66,10 +68,70 @@ $moduleSource = @(
     (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Test-LocalListenAddress')
     (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Get-ListeningPids')
     (Get-FunctionDefinitionText (Join-Path $root 'ProxyStatus.ps1') 'Get-LocalProxyPorts')
-    'Export-ModuleMember -Function Get-ProxyEndpoints,Test-LocalProxyDead,Clear-GitProxySettings,Test-LocalProxyForPort,Get-ListeningPids,Get-LocalProxyPorts'
+    'Export-ModuleMember -Function Get-ProxyEndpoints,Test-LocalProxyDead,Clear-GitProxySettings,Test-LocalProxyForPort,Get-ListeningPids,Get-LocalProxyPorts,Test-HealthyPhysRoute'
 ) -join "`n"
 $testModule = New-Module -Name ("ProxyClean.UnitTests.{0}" -f [Guid]::NewGuid().ToString('N')) -ScriptBlock ([ScriptBlock]::Create($moduleSource))
 Import-Module $testModule -Force
+
+# Execute the real route predicate with synthetic adapters; never query or change live routes.
+$routeCases = @(
+    @{ Name='physical up'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='192.0.2.1'; Expected=$true }
+    @{ Name='virtual up'; Adapter=@{ Status='Up'; HardwareInterface=$false }; NextHop='192.0.2.1'; Expected=$false }
+    @{ Name='unknown hardware'; Adapter=@{ Status='Up'; HardwareInterface=$null }; NextHop='192.0.2.1'; Expected=$false }
+    @{ Name='missing hardware'; Adapter=@{ Status='Up' }; NextHop='192.0.2.1'; Expected=$false }
+    @{ Name='missing adapter'; Adapter=$null; NextHop='192.0.2.1'; Expected=$false }
+    @{ Name='physical down'; Adapter=@{ Status='Down'; HardwareInterface=$true }; NextHop='192.0.2.1'; Expected=$false }
+    @{ Name='zero gateway'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='0.0.0.0'; Expected=$false }
+    @{ Name='fake-ip 198.18'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='198.18.0.1'; Expected=$false }
+    @{ Name='fake-ip 198.19'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='198.19.0.1'; Expected=$false }
+)
+foreach($case in $routeCases){
+    $adapterMap = @{}
+    if($null -ne $case.Adapter){ $adapterMap[1] = [pscustomobject]$case.Adapter }
+    & $testModule { param($map) $script:adMap = $map } $adapterMap
+    $actual = Test-HealthyPhysRoute ([pscustomobject]@{ ifIndex=1; NextHop=$case.NextHop })
+    Assert-True ($actual -eq $case.Expected) "Unexpected physical route classification: $($case.Name)."
+}
+
+# Execute only the source cleanup conditional; Remove-NetRoute is module-local and records fixtures.
+$cleanTokens = $null
+$cleanErrors = $null
+$cleanAst = [System.Management.Automation.Language.Parser]::ParseInput($clean, [ref]$cleanTokens, [ref]$cleanErrors)
+$routeGuard = @($cleanAst.EndBlock.Statements | Where-Object {
+    $_ -is [System.Management.Automation.Language.IfStatementAst] -and
+    $_.Clauses[0].Item1.Extent.Text -eq '$healthy.Count -lt 1'
+})
+Assert-True ($routeGuard.Count -eq 1) 'The route cleanup guard must be uniquely identified for isolated execution.'
+$routeCleanup = [ScriptBlock]::Create($routeGuard[0].Extent.Text)
+$routeAdapters = @{
+    1 = [pscustomobject]@{ Status='Up'; HardwareInterface=$true }
+    2 = [pscustomobject]@{ Status='Up'; HardwareInterface=$false }
+    3 = [pscustomobject]@{ Status='Up'; HardwareInterface=$false }
+}
+$routes = @(
+    [pscustomobject]@{ ifIndex=1; NextHop='192.0.2.1'; InterfaceAlias='Physical fixture' }
+    [pscustomobject]@{ ifIndex=2; NextHop='192.0.2.2'; InterfaceAlias='Virtual fixture' }
+    [pscustomobject]@{ ifIndex=3; NextHop='198.18.0.1'; InterfaceAlias='Active TUN fixture' }
+    [pscustomobject]@{ ifIndex=4; NextHop='198.19.0.1'; InterfaceAlias='Orphan fixture' }
+)
+foreach($case in @(
+    @{ Name='no physical fallback'; Routes=@($routes | Where-Object { $_.ifIndex -ne 1 }); Active=$false; Removed=@() }
+    @{ Name='preserve active TUN'; Routes=$routes; Active=$true; Removed=@(4) }
+    @{ Name='direct mode orphan cleanup'; Routes=$routes; Active=$false; Removed=@(3,4) }
+)){
+    $removedIndexes = @(& $testModule {
+        param($map, $inputRoutes, $active, $cleanup)
+        $script:adMap = $map
+        $allDef = $inputRoutes
+        $targetActive = $active
+        $healthy = @($allDef | Where-Object { Test-HealthyPhysRoute $_ })
+        $removed = 0
+        $script:RemovedRoutes = @()
+        . $cleanup
+        $script:RemovedRoutes | ForEach-Object { $_.ifIndex }
+    } $routeAdapters $case.Routes $case.Active $routeCleanup)
+    Assert-True (($removedIndexes -join ',') -eq ($case.Removed -join ',')) "Unexpected route removals: $($case.Name)."
+}
 
 Assert-True (Test-LocalProxyDead 'http://127.0.0.1:65534') 'A dead local proxy should be detected.'
 Assert-True (-not (Test-LocalProxyDead 'http=127.0.0.1:65534;https=proxy.example.test:443')) 'A mixed local/remote proxy must not be cleared as fully dead.'
@@ -134,6 +196,8 @@ Assert-True ($null -ne $snapshot.docker_proxy) 'ProxyStatus did not return Docke
     status = 'pass'
     parser_files = 5
     fixed_runtime_client_ports = 0
+    physical_route_cases = $routeCases.Count
+    route_cleanup_cases = 3
     observed_system_proxy = $snapshot.system_proxy
     observed_tun_route_count = @($snapshot.tun_routes).Count
 } | ConvertTo-Json -Depth 8 -Compress

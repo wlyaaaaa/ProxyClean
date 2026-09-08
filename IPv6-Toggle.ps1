@@ -1,4 +1,4 @@
-# Toggle IPv6 on the physical internet NIC(s) only.
+# Toggle IPv6 bindings on active physical NIC(s) only.
 # Excludes natpierce (public NAT-traversal needs its IPv6) and all virtual adapters.
 # Run elevated (the .bat self-elevates).
 $ErrorActionPreference = 'Stop'
@@ -9,7 +9,7 @@ $nics = Get-NetAdapter | Where-Object {
     $_.Name -notmatch $exclude
 }
 
-if (-not $nics) { Write-Host "  No internet NIC found to toggle." -ForegroundColor Red; Start-Sleep 3; exit }
+if (-not $nics) { Write-Host "  No active physical NIC found to toggle." -ForegroundColor Red; Start-Sleep 3; exit }
 
 $anyOn = $false
 foreach ($n in $nics) { if ((Get-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6).Enabled) { $anyOn = $true } }
@@ -18,14 +18,15 @@ Write-Host ""
 if ($anyOn) {
     foreach ($n in $nics) { Disable-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6 }
     ipconfig /flushdns | Out-Null
-    Write-Host "  IPv6 -> OFF   (all traffic uses IPv4 / proxy; Google & VPN stable). natpierce untouched." -ForegroundColor Green
+    Write-Host "  IPv6 bindings disabled on selected physical adapters. natpierce untouched." -ForegroundColor Cyan
 } else {
     foreach ($n in $nics) { Enable-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6 }
     ipconfig /flushdns | Out-Null
-    Write-Host "  IPv6 -> ON    (IPv6 direct works; but Google etc. may leak over IPv6 and time out)." -ForegroundColor Yellow
+    Write-Host "  IPv6 bindings enabled on selected physical adapters. natpierce untouched." -ForegroundColor Cyan
 }
 foreach ($n in $nics) {
     $on = (Get-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6).Enabled
-    Write-Host ("    {0,-26} IPv6 = {1}" -f $n.Name, $(if ($on) { 'ON' } else { 'OFF' }))
+    Write-Host ("    {0,-26} IPv6 = {1}" -f $n.Name, $(if ($on -eq $true) { 'ON' } elseif ($on -eq $false) { 'OFF' } else { 'UNKNOWN' }))
 }
+Write-Host "  Proxy use and Internet reachability: not tested."
 Write-Host ""

@@ -1,18 +1,19 @@
-# Show IPv6 ON/OFF per active adapter, and whether IPv6 has an internet default route.
+# Show IPv6 binding state per active adapter and reported IPv6 default routes.
 $ErrorActionPreference = 'SilentlyContinue'
 Write-Host ""
 Write-Host "  IPv6 Status" -ForegroundColor Cyan
 Write-Host "  --------------------------------------"
 Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Sort-Object Name | ForEach-Object {
     $on  = (Get-NetAdapterBinding -Name $_.Name -ComponentID ms_tcpip6).Enabled
-    $txt = if ($on) { 'ON ' } else { 'OFF' }
-    $col = if ($on) { 'Yellow' } else { 'Green' }
+    $txt = if ($on -eq $true) { 'ON ' } elseif ($on -eq $false) { 'OFF' } else { 'UNKNOWN' }
+    $col = 'Cyan'
     Write-Host ("    {0,-26} IPv6 = {1}" -f $_.Name, $txt) -ForegroundColor $col
 }
 Write-Host ""
 if (Get-NetRoute -DestinationPrefix '::/0') {
-    Write-Host "  Internet IPv6 route (::/0): YES  -> apps may use IPv6 (Google etc. can leak)" -ForegroundColor Yellow
+    Write-Host "  IPv6 default route (::/0): PRESENT" -ForegroundColor Cyan
 } else {
-    Write-Host "  Internet IPv6 route (::/0): NONE -> everything uses IPv4 (via proxy)" -ForegroundColor Green
+    Write-Host "  IPv6 default route (::/0): none reported" -ForegroundColor Cyan
 }
+Write-Host "  Proxy use and Internet reachability: not tested."
 Write-Host ""

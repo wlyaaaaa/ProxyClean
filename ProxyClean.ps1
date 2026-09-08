@@ -215,7 +215,7 @@ Write-Host "-------------------- 详细输出 --------------------" -ForegroundC
 # ── 2) 清理孤儿 TUN 默认路由 ─────────────────────────────────────────────
 # 安全规则(只删黑洞,绝不把你弄断网):
 #   • 只删"黑洞"默认路由:NextHop 是 fake-ip(198.18/198.19)、或所在网卡已 Down/已消失。
-#   • 绝不碰"健康的物理默认路由"(网卡 Up + 真实网关,如 WLAN/以太网)。
+#   • 绝不碰"健康的物理默认路由"(明确为硬件网卡 + Up + 真实网关,如 WLAN/以太网)。
 #   • 正在用、网卡 Up 的机场 TUN 路由(fake-ip)会被保留 —— 仅在"直连模式"下才清它。
 #   • 【硬保护】若当前一条健康物理默认路由都没有,则本次【不删任何路由】并告警 ——
 #     此时删任何东西都可能让你彻底断网(这正是旧版误删 WLAN 路由、要重置网络的根因)。
@@ -223,7 +223,8 @@ Write-Host "-------------------- 详细输出 --------------------" -ForegroundC
 
 function Test-HealthyPhysRoute($r){
     $ad = $adMap[$r.ifIndex]
-    return ($ad -and $ad.Status -eq 'Up') -and ($r.NextHop -ne '0.0.0.0') -and ($r.NextHop -notmatch '^198\.1[89]\.')
+    return ($ad -and $ad.HardwareInterface -eq $true -and $ad.Status -eq 'Up') -and
+        ($r.NextHop -ne '0.0.0.0') -and ($r.NextHop -notmatch '^198\.1[89]\.')
 }
 $healthy = @($allDef | Where-Object { Test-HealthyPhysRoute $_ })
 $removed = 0
@@ -250,8 +251,8 @@ if($healthy.Count -lt 1){
 
 # ── 健全性检查:确保还有物理默认路由 ─────────────────────────────────────
 $phys = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-        Where-Object { $_.NextHop -ne '0.0.0.0' -and ($adMap[$_.ifIndex] -and $adMap[$_.ifIndex].Status -eq 'Up') }
-if(-not $phys){ Warn "当前没有可用的默认路由!请检查物理网络(WLAN/以太网)是否已连接。" }
+        Where-Object { Test-HealthyPhysRoute $_ }
+if(-not $phys){ Warn "当前没有健康的物理默认路由!请检查物理网络(WLAN/以太网)是否已连接。" }
 
 # ── 3) 修正持久代理:env / 系统代理(绝不焊死端口) ────────────────────────────────
 $envVars = 'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'
