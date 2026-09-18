@@ -1,32 +1,10 @@
-# Toggle IPv6 bindings on active physical NIC(s) only.
-# Excludes natpierce (public NAT-traversal needs its IPv6) and all virtual adapters.
-# Run elevated (the .bat self-elevates).
-$ErrorActionPreference = 'Stop'
-$exclude = 'VMware|vEthernet|Loopback|Tailscale|WSL|FlyingBird|natpierce'
-$nics = Get-NetAdapter | Where-Object {
-    $_.Status -eq 'Up' -and
-    $_.HardwareInterface -eq $true -and
-    $_.Name -notmatch $exclude
-}
-
-if (-not $nics) { Write-Host "  No active physical NIC found to toggle." -ForegroundColor Red; Start-Sleep 3; exit }
-
-$anyOn = $false
-foreach ($n in $nics) { if ((Get-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6).Enabled) { $anyOn = $true } }
-
-Write-Host ""
-if ($anyOn) {
-    foreach ($n in $nics) { Disable-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6 }
-    ipconfig /flushdns | Out-Null
-    Write-Host "  IPv6 bindings disabled on selected physical adapters. natpierce untouched." -ForegroundColor Cyan
-} else {
-    foreach ($n in $nics) { Enable-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6 }
-    ipconfig /flushdns | Out-Null
-    Write-Host "  IPv6 bindings enabled on selected physical adapters. natpierce untouched." -ForegroundColor Cyan
-}
-foreach ($n in $nics) {
-    $on = (Get-NetAdapterBinding -Name $n.Name -ComponentID ms_tcpip6).Enabled
-    Write-Host ("    {0,-26} IPv6 = {1}" -f $n.Name, $(if ($on -eq $true) { 'ON' } elseif ($on -eq $false) { 'OFF' } else { 'UNKNOWN' }))
-}
-Write-Host "  Proxy use and Internet reachability: not tested."
-Write-Host ""
+﻿#Requires -Version 5.1
+[CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
+param([ValidateSet('Toggle','Enable','Disable')][string]$Mode='Toggle',[string]$InterfaceAlias,[Alias('AsJson')][switch]$Json)
+$ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
+$confirmation=@{};if($PSBoundParameters.ContainsKey('Confirm')){$confirmation.Confirm=$PSBoundParameters['Confirm']}
+try{
+    $result=Invoke-PCIPv6Change -Mode $Mode -InterfaceAlias $InterfaceAlias -WhatIf:$WhatIfPreference @confirmation
+    if($Json){$result|ConvertTo-Json -Depth 7}else{$result|Format-List}
+}catch{[pscustomobject]@{status='failed';message='IPv6 切换没有完成；请用 IPv6-Status.ps1 检查当前绑定，不能据此断言公网或代理已恢复。'}|ConvertTo-Json;exit 1}

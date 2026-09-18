@@ -1,4 +1,2 @@
 @echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0IPv6-Status.ps1"
-echo.
-pause
+powershell.exe -NoLogo -NoProfile -File "%~dp0Launch-ProxyClean.ps1" -Action IPv6Status

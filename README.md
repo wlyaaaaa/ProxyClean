@@ -1,261 +1,91 @@
 # ProxyClean
 
-> 一键修复「机场(代理)断开不干净」导致的 Windows 断网问题。
-> One-click fix for broken Windows networking left behind when a TUN-based proxy disconnects.
+Windows 代理残留诊断与定向修复工具。诊断、修复预览、配置回读、端口关闭和公网连通分别报告；不把“脚本跑完”当成“所有应用已直连”。
 
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)](https://learn.microsoft.com/powershell/)
-[![Platform](https://img.shields.io/badge/platform-Windows-0078D6)](#)
-[![License](https://img.shields.io/badge/license-MIT-green)](#license)
+支持 Windows PowerShell 5.1 和 PowerShell 7。批处理优先使用已安装的 PowerShell 7，否则回退到自带的 5.1。不安装常驻代理、后台修复服务或固定转发端口。
 
-## 这是什么 / What is this
+## 日常入口
 
-很多基于 **TUN 模式**的代理客户端(飞鸟 FlyingBird、TAG、Clash Verge、各类 clash/mihomo/sing-box 内核)
-在**退出或切换机场时清理不干净**。最典型的症状:
-
-- 浏览器还能上网,但 **VS Code / Qoder / ollama / git / npm 等命令行和 Electron 应用全部断网**;
-- 关掉代理后**整机彻底没网**,必须重启或重新打开那个代理才恢复;
-- 同时装了两个机场,**切换之后网络就乱了**。
-
-根因是断开时残留了**四类垃圾**,任何一类没清,网络就废:
-
-| # | 残留 | 后果 |
-|---|------|------|
-| 1 | **孤儿 TUN 默认路由** —— 指向已消失的 fake-ip 网关(`198.18.x.x`) | 所有流量被路由进一个已经不存在的隧道 → 黑洞 |
-| 2 | **系统代理(WinINET)指向死端口** | 走系统代理的应用(很多桌面软件/浏览器)连不上 |
-| 3 | **环境变量指向死端口** —— `HTTP_PROXY` / `HTTPS_PROXY` 还指着关掉的代理端口 | **读环境变量的应用(Qoder、ollama、git、curl、Node)全部断网** |
-| 4 | **fake-ip DNS 缓存** | 域名仍解析到 `198.18.x.x`,连不上 |
-
-`ProxyClean` 把这四类残留**一次性清干净,恢复到能正常上网的状态**。它遵循一条铁律:
-**只会把"指向死端口"的代理清成直连,绝不主动把系统代理/环境变量/git 焊死到某个会消失的机场端口**
-——那正是"机场一关就全断"的根源。在跑的机场,其系统代理交给机场自己维护,本工具不抢。
-
-## 它的原则 / Design principles
-
-- `ProxyClean.ps1` **不杀进程**、**不改任何机场的配置**、**不动 TUN 开关**(TUN 都给你留着);`关闭789*.bat` 是单独的强制关闭工具,只在你明确要关某个客户端时使用。
-- **永不主动设置代理**:只把指向**死端口**的系统代理/环境变量/git 清成直连,活的/远程的不碰。
-- **清路由带硬保护**:只删 fake-ip 黑洞 / 网卡已 Down 的孤儿路由;**只要当前没有一条健康的物理默认路由,就一条都不删**。备用通路必须来自明确识别的物理硬件网卡、处于 `Up` 且网关非零、非 fake-ip；虚拟网卡或硬件身份未知不能放行删除。
-- 这正好贴合真实用法:**你用机场自己的界面去连/断,断完之后跑一下本工具把烂摊子收干净。**
-
-## 用法 / Usage
-
-> 改路由表需要**管理员权限**,所以 `.bat` 会自动请求 UAC 提权。
-
-### 最常用:双击批处理
-
-| 文件 | 作用 |
-|------|------|
-| **`一键修复网络.bat`** | 自动检测在跑的机场并对齐;没有机场则恢复直连。需要管理员权限。**90% 的情况用这个。** |
-| **`恢复直连.bat`** | 强制恢复直连(关掉所有代理走本地网络),哪怕还有机场在监听。需要管理员权限。 |
-| **`一键刷新WiFi.bat`** | 轻量模拟“重新连一次 WiFi”:清空 DNS 缓存、释放并重新获取 WiFi 地址。不弹管理员权限。 |
-| **`一键重启WiFi网卡.bat`** | 强力模拟“切到手机热点,再切回 WiFi”:自动请求管理员权限,短暂禁用并重新启用 WiFi 网卡。 |
-| **`查看当前走哪个.bat`** | 动态发现 WinINET 当前端点、代理内核监听和活动 TUN 路由,审计 Docker Desktop 等消费端是否仍固定本地端口，并对比当前默认出口与已发现端点的出口 IP；不依赖固定端口表。 |
-| **`IPv6状态.bat`** | 只读查看活动网卡的 IPv6 绑定和报告的 `::/0` 默认路由；这些状态不证明应用经过代理或公网连通。 |
-| **`IPv6切换.bat`** | 在活动物理网卡上切换 IPv6 绑定并回读状态；保留 `natpierce`、Tailscale、WSL 和其他虚拟网卡。需要管理员权限，不保证代理或公网连通。 |
-| **`关闭18091-ClashVerge.bat`** | 强制结束 `127.0.0.1:18091` 的 Clash Verge/mihomo 核心,同时关闭 `clash-verge` 托盘界面,并清掉指向 18091 的代理残留。需要管理员权限。 |
-| **`关闭7892-飞鸟.bat`** | 强制结束 `127.0.0.1:7892` 的飞鸟核心,同时关闭飞鸟界面/服务外壳,并清掉指向 7892 的代理残留。需要管理员权限。 |
-| **`关闭18090-TAG.bat`** | 强制结束 `127.0.0.1:18090` 的 TAG/mihomo 核心,同时关闭 TAG 外壳进程,并清掉指向 18090 的代理残留。需要管理员权限。 |
-
-所有脚本输出都按"先结论、后详情"组织。先看顶部的 `Conclusion` / `结论`;下面的表格只是证据和排查细节。
-
-### WiFi 网页打不开,但切热点再切回 WiFi 又好了
-
-这种情况通常不是单纯 DNS。更像是 Windows 的 WiFi、默认路由、DNS 缓存、浏览器连接池或代理 TUN 状态卡住了。
-
-先双击:
-
-```text
-一键刷新WiFi.bat
-```
-
-如果还不行,再双击:
-
-```text
-一键重启WiFi网卡.bat
-```
-
-第二个会弹管理员权限,并且 WiFi 会短暂断开再连回。它不改代理、不改 DNS、不删路由,只做网卡重启和前后诊断。日志会写到桌面,文件名类似:
-
-```text
-WiFi网络-重启WiFi网卡-20260702-195202.txt
-```
-
-### 命令行 / PowerShell
+双击 `ProxyClean控制中心.vbs`，或运行：
 
 ```powershell
-# 自动对齐到当前在跑的机场;没有则恢复直连
-powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1
-
-# 强制恢复直连
-powershell -ExecutionPolicy Bypass -File .\ProxyClean.ps1 -Direct
-
-# 动态查看当前系统代理、代理内核监听、TUN 路由和出口
-powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
-
-# 查看或切换物理上网网卡的 IPv6
-powershell -ExecutionPolicy Bypass -File .\IPv6-Status.ps1
-powershell -ExecutionPolicy Bypass -File .\IPv6-Toggle.ps1
-
-# 轻量刷新 WiFi
-powershell -ExecutionPolicy Bypass -File .\WifiRebind.ps1 -Mode SoftReset
-
-# 重启 WiFi 网卡,需要管理员 PowerShell
-powershell -ExecutionPolicy Bypass -File .\WifiRebind.ps1 -Mode AdapterReset
-
-# 强制关闭指定端口对应的本地代理进程
-powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 18090 -Label TAG-18090
-powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 18091 -Label ClashVerge-18091
-powershell -ExecutionPolicy Bypass -File .\Stop-ProxyPort.ps1 -Port 7892 -Label FlyingBird-7892
+pwsh -NoProfile -STA -File .\ControlCenter.ps1
 ```
 
-输出示例:
+控制中心提供分层诊断、修复预览、执行已预览修复、撤销预览与执行、指定端口关闭预览与执行、管理员窗口。打开窗口不自动修复；关闭窗口不改变网络。改选模式或端口后必须重新预览。
 
-```
-==================== ProxyClean ====================
-[*] 检测到活动系统代理:FlyingBirdCore (127.0.0.1:<动态端口>)
-[+] 移除孤儿默认路由 via 198.18.0.2 (Meta) —— 网卡已 Down(黑洞)
-[*] 代理环境变量本来就是空的(直连)
-[*] 系统代理开着且端口可用(127.0.0.1:<动态端口>)—— 交给机场客户端维护,保持不动
-[+] 已刷新 DNS 缓存
-[+] 连通性测试通过 (HTTP 204) via 当前活动端点
-当前默认路由:
-接口  网关          RouteMetric
-----  ----          -----------
-WLAN  192.168.31.1            0
-====================================================
-```
+原批处理入口保留。`一键修复网络.bat` 执行默认清理；`恢复直连.bat` 关闭下文列出的手动用户代理设置。三个历史端口快捷方式只针对名称中指定的端口，并检查当前进程是否属于预期客户端；客户端换端口后应选择当前端口，不再按旧端口附带结束整个客户端。
 
-## 适配其他代理客户端 / Adapt to other proxies
-
-无需维护客户端名或端口表。脚本以当前 WinINET 发布的本地端点、代理内核实际监听和活动 fake-ip TUN 默认路由为运行事实。客户端更换 mixed-port 后，下一次诊断会自动发现。
-
-仓库里的 `关闭*.bat` 只是显式人工应急快捷方式，端口参数写在文件名和命令中；它们不会自动启动、不会设置系统代理，也不参与 `ProxyClean.ps1` / `ProxyStatus.ps1` 的目标选择。其他端点可直接调用 `Stop-ProxyPort.ps1 -Port <当前端口>`。
-
-## 工作原理 / How it works
-
-1. **判定目标**:读取 WinINET 当前发布的本地端点并验证监听，同时识别仍为 `Up` 的 fake-ip TUN 默认路由；两者都没有才判定为「直连」。不按客户端名称或固定端口猜测。
-2. **清孤儿路由(带硬保护)**:删掉 ① 网卡已 `Down`/已消失 的黑洞默认路由 ② 直连模式下残留的
-   `198.18/198.19` fake-ip 路由。**正在用、网卡 Up 的机场 TUN 路由保留;且只要当前没有一条健康的
-   物理默认路由,就一条都不删**——绝不会误删 WLAN/以太网把你彻底断网。
-3. **修正代理(只清死端口,绝不焊死)**:系统代理 / 环境变量 / git 只有在**指向已死的本地端口**时
-   才被清成直连;指向活端口或远程代理的**保持不动**;`-Direct` 则一律强制直连。
-   **本工具永不主动把它们设成某个机场端口。** `NO_PROXY` 白名单始终不动。
-4. **刷新 DNS** 并通过 `InternetSetOption` 通知系统代理设置已变更。
-5. **验证**:经目标代理(或直连)访问探测地址,打印连通性与最终默认路由。
-
-## 注意 / Notes
-
-- Claude Code / Node / git 的推荐用法是**不要配置任何代理环境变量**。打开 Clash Verge Rev / sing-box / v2rayN 等客户端的 TUN / 虚拟网卡 / Enhanced Mode,让系统底层接管出站流量;终端侧保持直连。
-- 如果只是用浏览器完成网页登录,而日常使用 Claude Code / Codex App,浏览器 DNS/WebRTC/时区泄露排查可以先放低优先级;详见 [docs/claude-code-tun-browser-leaks.md](docs/claude-code-tun-browser-leaks.md)。
-- 清理用户级环境变量后,对**已经在运行**的进程不生效,**新开**的程序才会读到干净环境。
-  若希望 Claude Code / Qoder / 终端立刻生效,重启该程序即可。
-- 若提示「机场端口在监听但出口不通」,通常是该机场**额度满 / 节点挂了**——换一个机场,再跑一次本工具。
-
-## ⚠️ 关于 `fallback/`「常驻兜底层」:默认不启用,且不要焊全局
-
-`fallback/` 曾有一套“常驻 mihomo 监听固定端口、所有应用指向它、它再转发到几个代理客户端”的方案，出发点是想**根治**「机场一关，命令行/Electron/Qoder 就连不上」。
-
-**它的致命问题**:这套方案要求你把 `HTTP_PROXY`/系统代理/git **焊死**到 `18099`,并开机自启一个隐藏的
-mihomo。可一旦那个隐藏进程没起来(被杀软删 / 没自启 / 崩了),你的全局又焊死在它上面,**整机全断,
-比不装还糟**(本项目实测踩过两次)。这正是"把持久设置焊到一个会消失的端口"的典型反例。
-
-**所以现在已移除全部静态客户端上游，配置退役为 DIRECT-only 参考，不启用、不自启，也不再提供焊全局的步骤。** 真正稳、且永远不会把你弄断网的用法，就是平时只开一个代理客户端，乱了就双击 `一键修复网络.bat`（或 `恢复直连.bat`）收拾干净。
-
-| 文件 | 作用 |
-|------|------|
-| `fallback/config.yaml` | 退役的 DIRECT-only 参考配置；不含飞鸟、Clash Verge 或 TAG 的端口 |
-| `fallback/start-hidden.vbs` | 历史手工启动参考；没有任何任务或启动项调用它 |
-| `fallback/代理状态.bat` | 历史诊断参考 |
-
-### 为什么不再给出"焊全局 + 开机自启"的安装步骤
-
-旧版这里曾教你:把终端、系统代理和 git 都固定指向兜底层端口,
-再开机自启一个隐藏的 mihomo。**这一步就是把你网络搞断的炸弹**:那个隐藏进程一旦没起来
-(被杀软删 / 没自启 / 崩了),而你的全局又焊死在它上面,**整机直接全断,比不装还糟**。
-
-这与本项目的安全原则(**绝不把持久设置焊到一个会消失的端口**)直接冲突,因此**已删除该教程**。
-`fallback/` 里的文件仅作退役参考保留；**不要把全局代理指向该参考监听**。
-
-> 如果你确实需要"命令行 / Claude Code 也能稳定走代理",优先使用代理客户端的 TUN / 虚拟网卡 / Enhanced Mode,不要给终端焊代理环境变量。
-
----
-
-## 故障排查:Claude Code / 命令行突然连不上怎么办
-
-> 浏览器(Chat)能用、但 **Claude Code / git / npm / curl** 连不上,几乎都是代理问题。
-> 按下面顺序一步步排查,大多数情况一两步就好。
-
-### 一、先理解:推荐用 TUN,不要给终端配置代理环境变量
-
-推荐模型是:
-
-1. 在 Clash Verge Rev / sing-box / v2rayN 等代理客户端里开启 **TUN / 虚拟网卡 / Enhanced Mode**。
-2. 代理客户端在系统底层建立虚拟网卡,接管出站流量。
-3. Claude Code / Node / git / curl 不设置 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`ANTHROPIC_BASE_URL`。
-4. 对终端程序来说,它是在直连官方服务;实际出站路径由 TUN 接管。
-
-浏览器、桌面软件和终端可能仍会受不同配置影响:
-
-| 程序 | 读哪个代理 |
-|------|-----------|
-| 浏览器 / Chat / Postman / 多数 Electron / Qoder / TAG | 系统代理(WinINET)或客户端自己的代理设置 |
-| Claude Code / git / npm / curl / Node | 默认直连;若存在 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`,会被这些变量劫持 |
-
-所以本项目的目标不是给终端"焊代理",而是**清掉死端口、脏环境变量、孤儿路由**,让 TUN 或直连恢复正常。
-
-### 二、一键诊断(整段复制到 PowerShell)
+## 命令行
 
 ```powershell
-"== 环境变量(命令行/Claude Code 读) =="
-'HTTP_PROXY','HTTPS_PROXY' | % { "  $_ = $([Environment]::GetEnvironmentVariable($_,'User'))" }
-"== 系统代理(浏览器/Qoder/TAG 读) =="
-$r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-"  Enable=$((gp $r).ProxyEnable)  Server=$((gp $r).ProxyServer)"
-"== 动态发现当前代理端点 / TUN / 出口 =="
-powershell -ExecutionPolicy Bypass -File .\ProxyStatus.ps1
+# 脱敏诊断，不写日志，不发起公网出口探测。
+pwsh -NoProfile -File .\ProxyStatus.ps1 -SkipExitProbe -Json
+
+# 修复预览不写配置、不产生撤销文件。
+pwsh -NoProfile -File .\ProxyClean.ps1 -Preview -Json
+
+# 默认清理失效本地端点，保留远程、存活和未知配置。
+pwsh -NoProfile -File .\ProxyClean.ps1
+
+# 明确关闭手动用户代理，不等于所有应用必然直连。
+pwsh -NoProfile -File .\ProxyClean.ps1 -Direct -Preview
+pwsh -NoProfile -File .\ProxyClean.ps1 -Direct
+
+# 先看撤销范围，再执行；不会复活已结束的进程。
+pwsh -NoProfile -File .\ProxyClean.ps1 -Undo -Preview
+pwsh -NoProfile -File .\ProxyClean.ps1 -Undo
+
+# 34567 是示例，不是内置客户端端口。
+pwsh -NoProfile -File .\Stop-ProxyPort.ps1 -Port 34567 -Preview
+pwsh -NoProfile -File .\Stop-ProxyPort.ps1 -Port 34567
+
+# 诊断默认不落盘，断线或无 IPv4 仍可明确选择网卡。
+pwsh -NoProfile -File .\WifiRebind.ps1 -Mode Diagnose -SkipConnectivityChecks -Json
+pwsh -NoProfile -File .\WifiRebind.ps1 -Mode SoftReset -InterfaceAlias 'Wi-Fi'
+pwsh -NoProfile -File .\WifiRebind.ps1 -Mode AdapterReset -InterfaceAlias 'Wi-Fi'
+pwsh -NoProfile -File .\IPv6-Status.ps1
+pwsh -NoProfile -File .\IPv6-Toggle.ps1 -WhatIf
 ```
 
-`200/204` 表示通,`000` 表示连不上。
+修改入口支持 `-WhatIf`；关闭端口、网卡重置、IPv6 变更和撤销还要求确认。只有显式给出 `-ExtraProcessName`，关闭端口入口才追加所列客户端进程。不存在默认客户端进程名表；旧端口已关闭也不会导致其他端口的客户端被结束。
 
-### 三、对症下药
+`WifiRebind -LogPath <新文件>` 才保存脱敏摘要，不覆盖已有文件。重置会中断选定连接，不应当作远程控制链路的无害测试。静态地址网卡不执行 DHCP 释放/续租；释放失败仍尝试续租，禁用成功后始终尝试重新启用。
 
-| 现象 | 原因 | 解决 |
-|------|------|------|
-| 终端里存在 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 旧配置把 Claude Code / Node 劫持到某个端口 | 清空这些环境变量,重开终端;日常依赖 TUN,不要给终端配代理 |
-| 环境变量/系统代理都指向活端口,就是连不上 | **终端是旧的**,还揣着改之前的代理值 | **彻底关掉 Claude Code 终端再重开**(环境变量对已运行进程无效) |
-| 多个代理客户端同时跑,不知道走谁 | 多个 TUN/HTTP 代理同时存在,默认路由和应用代理可能各走各的 | 双击 `查看当前走哪个.bat`;需要只留一个时使用对应的显式 `关闭*.bat` 或客户端退出功能 |
-| `git push` 报 `Could not connect ... via 127.0.0.1` | git 的 `http.proxy` 指向死端口 | 清掉 git 代理,让 git 走 TUN/直连:`git config --global --unset http.proxy`;`git config --global --unset https.proxy` |
-| Postman 等桌面程序连不上 | 缓存了旧的死端口,或被系统代理劫持 | 先**重启该程序**;仍不行就在它自己的 Proxy 设置里关代理 |
+## 处理范围
 
-### 四、应急回退(30 秒恢复上网)
+共享模块统一 URI、协议映射、回环地址、IPv4/IPv6 监听和路由分类。仅端口相同、却绑定在局域网地址上的服务，不算 `127.0.0.1` 的存活代理；IPv6 通配监听能否接收 IPv4 不明确时保留 `unknown`。
 
-**管理员 PowerShell** 跑这一段,立刻变直连——国内一切恢复,海外暂时没有:
+默认清理只关闭完全指向死本地端点的 WinINET 手动代理、对应用户环境变量和可安全定位的通用全局 Git 代理；从不主动设置端口。`NO_PROXY`、远程代理和混合配置中的其他映射保留。指定端口操作只移除该端点，不触发全机路由清理。
+
+`-Direct` 的范围是手动 WinINET、用户级 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY、可安全定位的通用全局 Git 代理，以及通过物理回退保护的 IPv4 残留默认路由。**PAC、WinHTTP、机器环境变量、URL 专属或含糊来源 Git 配置、Docker 和其他应用不被隐式改写。** 已运行程序可能仍保留旧环境变量，工具不会假装刷新了它们。
+
+路由修改只针对 ActiveStore；删除前再次确认物理回退及目标身份。无法确认健康物理默认路由就不删路由。IPv6 切换只处理明确的物理网卡，保留虚拟/Tailscale 等隧道。绑定状态与公网、代理路径是不同事实。
+
+## 分层诊断
+
+输出包括 WinINET/PAC、分作用域环境变量、Git、WinHTTP、活动 TUN、Docker 配置和可获得的当前运行态。动态客户端监听也会列作候选，但“进程像代理”不代表它每个端口都是 HTTP 代理。Docker 日志只读有界尾部；缺少当前、可解析且属于本次运行的事件就保持未知，不用日志文件更新时间替旧事件续期。
+
+出口比较只给匿名相同出口分组，不公开出口地址；相同出口不证明经过同一个客户端。HTTP 成功也不证明绕过 TUN。SYSTEM/非交互上下文明确标注，不能充当桌面用户验收。
+
+## 撤销与恢复
+
+每轮可撤销操作在效果前持久化：`%LOCALAPPDATA%\ProxyClean\last-operation.dpapi`。代理原值由 Windows 当前用户 DPAPI 保护，不写明文日志。修改前比对预览原值，修改后回读；失败时逆序恢复。外部变化被保留，未完成状态保持 `recovery_required`，不会强制覆盖或清掉记录。
+
+下一次成功清理替换上一轮撤销记录；未完成记录阻止新的配置修改。撤销不恢复已关闭进程、DNS 缓存、网卡重置或其他应用。DPAPI 文件不是跨电脑、跨用户恢复包。无法自动恢复时按 Windows/客户端原生设置处理，不删除日志以伪造完成。
+
+配置状态包括 `applied`、`no_changes`、`failed_rolled_back`、`recovery_required`。失败和不完整操作返回非零退出码；DNS 刷新失败单独返回 2。HTTP 探测、通知和所有应用直连是否已证明保持独立字段。
+
+## 验证
+
+预先安装 Pester 5.7.1 或兼容版本；测试不自动安装依赖。
 
 ```powershell
-$r='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-Set-ItemProperty $r -Name ProxyEnable -Value 0
-'HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy' | % { [Environment]::SetEnvironmentVariable($_,$null,'User') }
-git config --global --unset http.proxy  2>$null
-git config --global --unset https.proxy 2>$null
+pwsh -NoProfile -File .\ProxyClean.test.ps1
+powershell -NoProfile -File .\ProxyClean.test.ps1
+pwsh -NoProfile -File .\Test-WifiRebind.ps1
 ```
 
-恢复上网后,再从容修 TUN / 节点 / 客户端。**改完都要重开终端。**
+测试隔离真实代理、路由和进程效果，覆盖混合配置、地址族、回滚、并发变化、DPAPI、Git 原子写入、断线网卡、进程身份、IPv6 及脱敏。零发现、发现错误和未运行不能算通过。`ControlCenter.ps1 -SelfTest` 只验证窗口构造，不证明用户点击或网络恢复。
 
-### 五、Claude Code 推荐网络方式
-
-- 开代理客户端的 **TUN / 虚拟网卡 / Enhanced Mode**。
-- Claude Code 终端里不要设置 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。
-- 不要设置 `ANTHROPIC_BASE_URL` 指向第三方中转,除非你明确知道这会改变服务提供方和信任边界。
-- 用 `查看当前走哪个.bat` 动态判断当前系统端点、TUN 和默认出口。
-- 用 `关闭789*.bat` 只保留一个代理客户端,避免多个 TUN/核心同时抢路由。
-
-### 六、最容易踩的五个坑
-
-1. **不要给 Claude Code 日常配置代理环境变量**——优先用 TUN;环境变量只用于排查脏配置和清理死端口。
-2. **别复制独立 `mihomo.exe`**——会被 360 秒删;用机场客户端自带的白名单 exe。
-3. **健康检查别用 google**——机场全关时会误判全部不健康,回退到死端口。要用国内地址。
-4. **`.bat` 必须 GBK + CRLF 编码**——UTF-8 / LF 会让 cmd 把中文和 URL 拆碎,报 `'xxx' 不是内部或外部命令`。
-5. **飞鸟用「智能分流」别用「全局代理」**——全局代理会把国内登录也绕到海外节点,反而更慢/更容易失败。
-
-## License
-
-MIT. 详见 [LICENSE](LICENSE)。
+历史故障背景保留在 [docs](docs/)，不是当前端口、DNS 或网络状态的权威来源。现行边界见 [SECURITY.md](SECURITY.md)，更新见 [CHANGELOG.md](CHANGELOG.md)。`fallback` 为保留的退役 DIRECT-only 材料，不作为现行默认入口。

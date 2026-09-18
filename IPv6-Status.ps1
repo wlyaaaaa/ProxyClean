@@ -1,19 +1,8 @@
-# Show IPv6 binding state per active adapter and reported IPv6 default routes.
-$ErrorActionPreference = 'SilentlyContinue'
-Write-Host ""
-Write-Host "  IPv6 Status" -ForegroundColor Cyan
-Write-Host "  --------------------------------------"
-Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Sort-Object Name | ForEach-Object {
-    $on  = (Get-NetAdapterBinding -Name $_.Name -ComponentID ms_tcpip6).Enabled
-    $txt = if ($on -eq $true) { 'ON ' } elseif ($on -eq $false) { 'OFF' } else { 'UNKNOWN' }
-    $col = 'Cyan'
-    Write-Host ("    {0,-26} IPv6 = {1}" -f $_.Name, $txt) -ForegroundColor $col
-}
-Write-Host ""
-if (Get-NetRoute -DestinationPrefix '::/0') {
-    Write-Host "  IPv6 default route (::/0): PRESENT" -ForegroundColor Cyan
-} else {
-    Write-Host "  IPv6 default route (::/0): none reported" -ForegroundColor Cyan
-}
-Write-Host "  Proxy use and Internet reachability: not tested."
-Write-Host ""
+#Requires -Version 5.1
+[CmdletBinding()]
+param([Alias('AsJson')][switch]$Json)
+$ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
+$result=Get-PCIPv6Snapshot
+if($Json){$result|ConvertTo-Json -Depth 7}else{$result|ConvertTo-Json -Depth 7|Write-Host}
+if($result.default_route -eq 'unknown' -or @($result.adapters|Where-Object binding_state -eq 'unknown').Count){exit 2}

@@ -1,203 +1,22 @@
+#Requires -Version 5.1
 [CmdletBinding()]
-param()
-
-$ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSCommandPath
-
-function Assert-True([bool]$condition, [string]$message){
-    if(-not $condition){ throw $message }
-}
-
-function Get-FunctionDefinitionText([string]$path, [string]$name){
-    $tokens = $null
-    $errors = $null
-    $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
-    Assert-True (@($errors).Count -eq 0) "$path has parser errors: $(@($errors).Message -join '; ')"
-    $definition = $ast.Find({
-        param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
-    }, $true)
-    Assert-True ($null -ne $definition) "$path does not define $name."
-    return $definition.Extent.Text
-}
-
-foreach($name in 'ProxyClean.ps1','ProxyStatus.ps1','Stop-ProxyPort.ps1','IPv6-Status.ps1','IPv6-Toggle.ps1'){
-    $path = Join-Path $root $name
-    $tokens = $null
-    $errors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
-    Assert-True (@($errors).Count -eq 0) "$name has parser errors: $(@($errors).Message -join '; ')"
-}
-
-$clean = Get-Content -LiteralPath (Join-Path $root 'ProxyClean.ps1') -Raw
-$status = Get-Content -LiteralPath (Join-Path $root 'ProxyStatus.ps1') -Raw
-$fallback = Get-Content -LiteralPath (Join-Path $root 'fallback\config.yaml') -Raw
-$ipv6Status = Get-Content -LiteralPath (Join-Path $root 'IPv6-Status.ps1') -Raw
-$ipv6Toggle = Get-Content -LiteralPath (Join-Path $root 'IPv6-Toggle.ps1') -Raw
-$runtimeScripts = $clean + "`n" + $status
-
-Assert-True ($clean -notmatch '\$Airports') 'ProxyClean still contains the legacy fixed client-port table.'
-Assert-True ($runtimeScripts -notmatch '(?<!\d)(?:7892|18090|18091)(?!\d)') 'A legacy client port remains in automatic runtime discovery.'
-Assert-True ($clean -match 'Get-LocalProxyPorts') 'ProxyClean does not discover the current WinINET endpoint.'
-Assert-True ($clean -match 'activeTunRoutes') 'ProxyClean does not discover active fake-ip TUN routes.'
-Assert-True ($status -match 'published_by_system_proxy') 'ProxyStatus does not distinguish WinINET-published proxy endpoints.'
-Assert-True ($status -match 'Get-DockerProxySnapshot') 'ProxyStatus does not audit Docker Desktop consumer proxy pins.'
-Assert-True ($status -notmatch 'ConvertFrom-Json\s+-Depth') 'ProxyStatus uses a PowerShell 7-only ConvertFrom-Json parameter.'
-Assert-True ($fallback -notmatch '(?<!\d)(?:7892|18090|18091)(?!\d)') 'The retired fallback still contains fixed proxy-client ports.'
-Assert-True ($fallback -match 'MATCH,DIRECT') 'The retired fallback is not DIRECT-only.'
-Assert-True ($ipv6Status -match "Get-NetRoute\s+-DestinationPrefix\s+'::/0'") 'IPv6 status must report the Internet default route.'
-Assert-True ($ipv6Toggle -match 'natpierce' -and $ipv6Toggle -match 'Tailscale' -and $ipv6Toggle -match 'vEthernet') 'IPv6 toggle must preserve the registered tunnel and virtual adapters.'
-Assert-True ($ipv6Toggle -match 'HardwareInterface\s+-eq\s+\$true') 'IPv6 toggle must select physical hardware adapters, not unlisted TUN adapters.'
-Assert-True ($ipv6Toggle -match 'Disable-NetAdapterBinding' -and $ipv6Toggle -match 'Enable-NetAdapterBinding') 'IPv6 toggle must retain both reversible directions.'
-
-# 只导入函数定义，不执行会清代理/路由的主脚本。
-$global:ProxyCleanTestAlivePorts = @()
-$global:ProxyCleanTestListeners = @()
-$moduleSource = @(
-    'function Test-PortAlive([int]$p){ return $global:ProxyCleanTestAlivePorts -contains $p }'
-    'function Get-NetTCPConnection { [CmdletBinding()] param([string]$State, [int]$LocalPort) @($global:ProxyCleanTestListeners | Where-Object { $_.LocalPort -eq $LocalPort }) }'
-    'function Info($m){}'
-    'function Ok($m){}'
-    'function Warn($m){}'
-    'function Remove-NetRoute { [CmdletBinding(SupportsShouldProcess=$true)] param($InputObject) $script:RemovedRoutes += $InputObject }'
-    (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Test-HealthyPhysRoute')
-    (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Get-ProxyEndpoints')
-    (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Test-LocalProxyDead')
-    (Get-FunctionDefinitionText (Join-Path $root 'ProxyClean.ps1') 'Clear-GitProxySettings')
-    (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Test-LocalProxyForPort')
-    (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Test-LocalListenAddress')
-    (Get-FunctionDefinitionText (Join-Path $root 'Stop-ProxyPort.ps1') 'Get-ListeningPids')
-    (Get-FunctionDefinitionText (Join-Path $root 'ProxyStatus.ps1') 'Get-LocalProxyPorts')
-    'Export-ModuleMember -Function Get-ProxyEndpoints,Test-LocalProxyDead,Clear-GitProxySettings,Test-LocalProxyForPort,Get-ListeningPids,Get-LocalProxyPorts,Test-HealthyPhysRoute'
-) -join "`n"
-$testModule = New-Module -Name ("ProxyClean.UnitTests.{0}" -f [Guid]::NewGuid().ToString('N')) -ScriptBlock ([ScriptBlock]::Create($moduleSource))
-Import-Module $testModule -Force
-
-# Execute the real route predicate with synthetic adapters; never query or change live routes.
-$routeCases = @(
-    @{ Name='physical up'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='192.0.2.1'; Expected=$true }
-    @{ Name='virtual up'; Adapter=@{ Status='Up'; HardwareInterface=$false }; NextHop='192.0.2.1'; Expected=$false }
-    @{ Name='unknown hardware'; Adapter=@{ Status='Up'; HardwareInterface=$null }; NextHop='192.0.2.1'; Expected=$false }
-    @{ Name='missing hardware'; Adapter=@{ Status='Up' }; NextHop='192.0.2.1'; Expected=$false }
-    @{ Name='missing adapter'; Adapter=$null; NextHop='192.0.2.1'; Expected=$false }
-    @{ Name='physical down'; Adapter=@{ Status='Down'; HardwareInterface=$true }; NextHop='192.0.2.1'; Expected=$false }
-    @{ Name='zero gateway'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='0.0.0.0'; Expected=$false }
-    @{ Name='fake-ip 198.18'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='198.18.0.1'; Expected=$false }
-    @{ Name='fake-ip 198.19'; Adapter=@{ Status='Up'; HardwareInterface=$true }; NextHop='198.19.0.1'; Expected=$false }
-)
-foreach($case in $routeCases){
-    $adapterMap = @{}
-    if($null -ne $case.Adapter){ $adapterMap[1] = [pscustomobject]$case.Adapter }
-    & $testModule { param($map) $script:adMap = $map } $adapterMap
-    $actual = Test-HealthyPhysRoute ([pscustomobject]@{ ifIndex=1; NextHop=$case.NextHop })
-    Assert-True ($actual -eq $case.Expected) "Unexpected physical route classification: $($case.Name)."
-}
-
-# Execute only the source cleanup conditional; Remove-NetRoute is module-local and records fixtures.
-$cleanTokens = $null
-$cleanErrors = $null
-$cleanAst = [System.Management.Automation.Language.Parser]::ParseInput($clean, [ref]$cleanTokens, [ref]$cleanErrors)
-$routeGuard = @($cleanAst.EndBlock.Statements | Where-Object {
-    $_ -is [System.Management.Automation.Language.IfStatementAst] -and
-    $_.Clauses[0].Item1.Extent.Text -eq '$healthy.Count -lt 1'
-})
-Assert-True ($routeGuard.Count -eq 1) 'The route cleanup guard must be uniquely identified for isolated execution.'
-$routeCleanup = [ScriptBlock]::Create($routeGuard[0].Extent.Text)
-$routeAdapters = @{
-    1 = [pscustomobject]@{ Status='Up'; HardwareInterface=$true }
-    2 = [pscustomobject]@{ Status='Up'; HardwareInterface=$false }
-    3 = [pscustomobject]@{ Status='Up'; HardwareInterface=$false }
-}
-$routes = @(
-    [pscustomobject]@{ ifIndex=1; NextHop='192.0.2.1'; InterfaceAlias='Physical fixture' }
-    [pscustomobject]@{ ifIndex=2; NextHop='192.0.2.2'; InterfaceAlias='Virtual fixture' }
-    [pscustomobject]@{ ifIndex=3; NextHop='198.18.0.1'; InterfaceAlias='Active TUN fixture' }
-    [pscustomobject]@{ ifIndex=4; NextHop='198.19.0.1'; InterfaceAlias='Orphan fixture' }
-)
-foreach($case in @(
-    @{ Name='no physical fallback'; Routes=@($routes | Where-Object { $_.ifIndex -ne 1 }); Active=$false; Removed=@() }
-    @{ Name='preserve active TUN'; Routes=$routes; Active=$true; Removed=@(4) }
-    @{ Name='direct mode orphan cleanup'; Routes=$routes; Active=$false; Removed=@(3,4) }
-)){
-    $removedIndexes = @(& $testModule {
-        param($map, $inputRoutes, $active, $cleanup)
-        $script:adMap = $map
-        $allDef = $inputRoutes
-        $targetActive = $active
-        $healthy = @($allDef | Where-Object { Test-HealthyPhysRoute $_ })
-        $removed = 0
-        $script:RemovedRoutes = @()
-        . $cleanup
-        $script:RemovedRoutes | ForEach-Object { $_.ifIndex }
-    } $routeAdapters $case.Routes $case.Active $routeCleanup)
-    Assert-True (($removedIndexes -join ',') -eq ($case.Removed -join ',')) "Unexpected route removals: $($case.Name)."
-}
-
-Assert-True (Test-LocalProxyDead 'http://127.0.0.1:65534') 'A dead local proxy should be detected.'
-Assert-True (-not (Test-LocalProxyDead 'http=127.0.0.1:65534;https=proxy.example.test:443')) 'A mixed local/remote proxy must not be cleared as fully dead.'
-Assert-True (-not (Test-LocalProxyDead 'https://proxy.example.test:443')) 'A remote proxy must not be treated as local.'
-$global:ProxyCleanTestAlivePorts = @(7892)
-Assert-True (-not (Test-LocalProxyDead 'http://localhost:7892')) 'A live local proxy must be preserved.'
-$global:ProxyCleanTestAlivePorts = @()
-Assert-True (Test-LocalProxyDead 'http://[::1]:65534') 'An IPv6 loopback proxy should be recognized.'
-
-Assert-True (Test-LocalProxyForPort 'http=localhost:7892;https=proxy.example.test:443' 7892) 'The requested local endpoint should match.'
-Assert-True (-not (Test-LocalProxyForPort 'http=proxy.example.test:7892;https=localhost:8080' 7892)) 'A remote port must not cross-match a different local endpoint.'
-Assert-True (-not (Test-LocalProxyForPort 'http://mylocalhost:7892' 7892)) 'A hostname suffix must not be mistaken for localhost.'
-Assert-True (@(Get-LocalProxyPorts 'http=mylocalhost:7892').Count -eq 0) 'ProxyStatus must not mistake a hostname suffix for localhost.'
-Assert-True (@(Get-LocalProxyPorts 'http=[::1]:7892') -contains 7892) 'ProxyStatus should recognize an IPv6 loopback endpoint.'
-Assert-True (@(Get-LocalProxyPorts 'http=localhost:99999').Count -eq 0) 'ProxyStatus must reject an invalid TCP port.'
-
-$global:ProxyCleanTestListeners = @(
-    [pscustomobject]@{ LocalPort=7892; LocalAddress='127.0.0.1'; OwningProcess=101 }
-    [pscustomobject]@{ LocalPort=7892; LocalAddress='::1'; OwningProcess=102 }
-    [pscustomobject]@{ LocalPort=7892; LocalAddress='0.0.0.0'; OwningProcess=103 }
-    [pscustomobject]@{ LocalPort=7892; LocalAddress='::'; OwningProcess=104 }
-    [pscustomobject]@{ LocalPort=7892; LocalAddress='192.168.1.50'; OwningProcess=201 }
-    [pscustomobject]@{ LocalPort=7892; LocalAddress='10.0.0.25'; OwningProcess=202 }
-)
-$localListenerPids = @(Get-ListeningPids 7892)
-Assert-True (@($localListenerPids | Where-Object { $_ -in 101,102,103,104 }).Count -eq 4) 'Loopback and wildcard listeners should remain eligible for the requested local proxy port.'
-Assert-True (@($localListenerPids | Where-Object { $_ -in 201,202 }).Count -eq 0) 'A listener bound only to a LAN address must not be stopped as a local proxy endpoint.'
-
-$testConfigDir = Join-Path ([IO.Path]::GetTempPath()) 'Codex'
-$testConfig = Join-Path $testConfigDir ("proxyclean-test-{0}.gitconfig" -f [Guid]::NewGuid().ToString('N'))
-$previousGitConfigGlobal = [Environment]::GetEnvironmentVariable('GIT_CONFIG_GLOBAL', 'Process')
+param([ValidateSet('All','Network')][string]$Suite='All',[switch]$Json)
+$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 try {
-    New-Item -ItemType Directory -Path $testConfigDir -Force | Out-Null
-    [Environment]::SetEnvironmentVariable('GIT_CONFIG_GLOBAL', $testConfig, 'Process')
-    & git config --global http.proxy 'https://proxy.example.test:8443'
-    & git config --global https.proxy 'http://127.0.0.1:65534'
-    Assert-True ($LASTEXITCODE -eq 0) 'Failed to create isolated git proxy test configuration.'
-
-    Clear-GitProxySettings
-    $httpProxy = (& git config --global --get http.proxy) 2>$null
-    $httpsProxy = (& git config --global --get https.proxy) 2>$null
-    Assert-True ($httpProxy -eq 'https://proxy.example.test:8443') 'A valid remote git proxy should be preserved.'
-    Assert-True ([string]::IsNullOrWhiteSpace([string]$httpsProxy)) 'A dead local https.proxy should be cleared independently.'
+    $files=@(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File|Where-Object { $_.Extension -in @('.ps1','.psm1') -and $_.FullName -notmatch '[\\/]\.git[\\/]' })
+    foreach($file in $files){$tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){throw ('Parse failure: '+$file.Name)}}
+    Import-Module Pester -MinimumVersion 5.7.1 -Force
+    $c=New-PesterConfiguration
+    $c.Run.Path=if($Suite -eq 'Network'){Join-Path $PSScriptRoot 'tests\ProxyClean.Network.Tests.ps1'}else{Join-Path $PSScriptRoot 'tests'}
+    $c.Run.PassThru=$true;$c.Output.Verbosity='None';$c.TestResult.Enabled=$false
+    $r=Invoke-Pester -Configuration $c 6>$null 5>$null 4>$null 3>$null
+    $passed=$r.Result -eq 'Passed' -and $r.TotalCount -gt 0 -and $r.FailedCount -eq 0 -and $r.NotRunCount -eq 0
+    $result=[pscustomobject]@{schema='proxyclean.repository-tests.v1';status=if($passed){'pass'}else{'fail'};powershell=$PSVersionTable.PSVersion.ToString();suite=$Suite;parser_files=$files.Count;total=$r.TotalCount;passed=$r.PassedCount;failed=$r.FailedCount;skipped=$r.SkippedCount;not_run=$r.NotRunCount;failed_tests=@($r.Tests|Where-Object Result -eq 'Failed'|ForEach-Object {$_.ExpandedPath});discovery_errors=@($r.Containers|ForEach-Object {@($_.ErrorRecord|ForEach-Object ToString)})}
+    $result|ConvertTo-Json -Depth 6
+    if(-not $passed){exit 1}
+} catch {
+    [pscustomobject]@{schema='proxyclean.repository-tests.v1';status='fail';message=$_.Exception.Message}|ConvertTo-Json
+    exit 1
 }
-finally {
-    [Environment]::SetEnvironmentVariable('GIT_CONFIG_GLOBAL', $previousGitConfigGlobal, 'Process')
-    if(Test-Path -LiteralPath $testConfig -PathType Leaf){ Remove-Item -LiteralPath $testConfig -Force }
-}
-Remove-Module $testModule -Force
-Remove-Variable -Name ProxyCleanTestAlivePorts -Scope Global -ErrorAction SilentlyContinue
-Remove-Variable -Name ProxyCleanTestListeners -Scope Global -ErrorAction SilentlyContinue
-
-$statusJson = & (Join-Path $root 'ProxyStatus.ps1') -SkipExitProbe -Json
-$statusSucceeded = $?
-Assert-True $statusSucceeded 'ProxyStatus read-only JSON probe failed.'
-$snapshot = $statusJson | ConvertFrom-Json
-Assert-True ($snapshot.schema -eq 'proxyclean.dynamic-status.v1') 'ProxyStatus returned an unexpected schema.'
-Assert-True ($snapshot.discovery -eq 'wininet_endpoint_plus_live_proxy_owned_listeners_and_active_routes') 'ProxyStatus returned an unexpected discovery strategy.'
-Assert-True ($null -ne $snapshot.docker_proxy) 'ProxyStatus did not return Docker Desktop proxy evidence.'
-
-[pscustomobject][ordered]@{
-    status = 'pass'
-    parser_files = 5
-    fixed_runtime_client_ports = 0
-    physical_route_cases = $routeCases.Count
-    route_cleanup_cases = 3
-    observed_system_proxy = $snapshot.system_proxy
-    observed_tun_route_count = @($snapshot.tun_routes).Count
-} | ConvertTo-Json -Depth 8 -Compress
