@@ -21,12 +21,12 @@ function Assert-PCStepCondition {
         throw 'PC_PROXY_SERVER_CHANGED'
     }
     $values=@(Get-PCValue $Step 'required_dead_values' @())
-    $port=[int](Get-PCValue $Step 'required_closed_port' 0)
-    if(-not $values.Count -and -not $port){return}
+    $ports=@(Get-PCValue $Step 'required_closed_ports' @());$oldPort=[int](Get-PCValue $Step 'required_closed_port' 0);if($oldPort){$ports+=@($oldPort)}
+    if(-not $values.Count -and -not $ports.Count){return}
     try{$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)}catch{throw 'PC_LISTENER_UNKNOWN'}
-    if($port){
+    if($ports.Count){
         foreach($row in $listeners){
-            if([int]$row.LocalPort -ne $port){continue}
+            if([int]$row.LocalPort -notin $ports){continue}
             [Net.IPAddress]$address=$null
             if([Net.IPAddress]::TryParse([string]$row.LocalAddress,[ref]$address) -and
                 ([Net.IPAddress]::IsLoopback($address) -or $address.Equals([Net.IPAddress]::Any) -or $address.Equals([Net.IPAddress]::IPv6Any))){throw 'PC_PROXY_RESTARTED'}
@@ -41,6 +41,7 @@ function ConvertTo-PCFriendlyError {
     $message=if($ErrorRecord -is [string]){$ErrorRecord}else{[string]$ErrorRecord.Exception.Message}
     switch -Regex ($message){
         'PC_CANCELLED|OperationCanceled'{return '检查已取消，没有修改网络设置。'}
+        'Service identity changed|Process identity changed'{return '所选程序或服务已变化，本次没有继续操作。请重新检查后再确认。'}
         'PC_PROXY_SERVER_CHANGED|Configuration changed|Git proxy changed|Route changed|identity changed'{return '设置在检查后发生了变化。本次已停止，请重新检查后再操作。'}
         'PC_PROXY_RESTARTED|adapter recovered'{return '代理或网卡已经恢复运行，本次不再清理。请重新检查。'}
         'PC_LEGACY_CLIENT_CHANGED'{return '旧快捷方式的端口已属于其他程序，未选择任何结束操作。请重新选择实际程序。'}
@@ -112,15 +113,30 @@ function Format-PCInspection {
 }
 function Invoke-PCWorkflow {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Medium')]
-    param([ValidateSet('Inspect','Repair','Undo','Connectivity','StopPreview','Stop','WifiSoft','WifiReset','IPv6Status','IPv6Enable','IPv6Disable','ExitProbe','FlushDns')][string]$Action='Inspect',
-        $Plan,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any',
+    param([ValidateSet('Inspect','Diagnose','DisconnectPreview','Disconnect','DisconnectForce','Repair','Undo','Connectivity','StopPreview','Stop','WifiSoft','WifiReset','IPv6Status','IPv6Enable','IPv6Disable','ExitProbe','FlushDns')][string]$Action='Inspect',
+        $Plan,[string]$ClientKey,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any',
         [switch]$SkipConnectivityChecks,[scriptblock]$Progress)
     try{
-        if($Action -in @('Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
+        if($Action -in @('Disconnect','DisconnectForce','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
             -not $PSCmdlet.ShouldProcess('选定的设置或程序','执行已确认的操作')){
             return [pscustomobject]@{action=$Action;status='preview'}
         }
         switch($Action){
+            'Diagnose'{
+                $inspection=Invoke-PCWorkflow Inspect -Progress $Progress
+                if($inspection.status -ne 'inspected'){return $inspection}
+                $probe=[pscustomobject]@{status='not_tested'}
+                if(-not $inspection.view.blocked -and -not @($inspection.plan.steps).Count){
+                    Write-PCProgress $Progress 'connectivity' '没有发现可修复的代理设置，正在测试基础网页连接…'
+                    $probe=Test-PCConnectivity
+                }
+                return [pscustomobject]@{status='diagnosed';inspection=$inspection;connectivity=$probe}
+            }
+            'DisconnectPreview'{return Get-PCClientClosePreview -ClientKey $ClientKey -PreviousPlan $Plan -Progress $Progress}
+            {$_ -in @('Disconnect','DisconnectForce')}{
+                if(-not $Plan){throw 'Please preview the client first.'}
+                return Invoke-PCClientClose -Plan $Plan -Force:($Action -eq 'DisconnectForce') -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
+            }
             'Inspect'{
                 $snapshot=Get-PCSnapshot -Progress $Progress
                 Write-PCProgress $Progress 'plan' '正在整理检查结果与可恢复记录…'
@@ -128,9 +144,14 @@ function Invoke-PCWorkflow {
                 try{$undo=Get-PCUndoSummary}catch{$undo=[pscustomobject]@{available=$false;phase='unreadable'}}
                 $public=ConvertTo-PCPublicSnapshot $snapshot
                 $view=Get-PCCheckView -Snapshot $public -Plan $plan -Undo $undo
+                $clients=@();$clientObservation='observed'
+                try{
+                    $endpoints=if($snapshot.systemProxy -and $snapshot.systemProxy.enabled){@(Get-ProxyEndpoints $snapshot.systemProxy.server)}else{@()}
+                    $clients=@(ConvertTo-PCPublicClients @(Get-PCClientInventory -Listeners $snapshot.listeners -Endpoints $endpoints))
+                }catch{$clientObservation='unknown'}
                 $adapters=@($snapshot.adapters|Where-Object{(Get-PCValue $_ 'HardwareInterface') -eq $true}|ForEach-Object{[pscustomobject]@{name=[string]$_.Name;status=[string]$_.Status}})
                 Write-PCProgress $Progress 'done' '检查完成，没有修改网络设置。'
-                return [pscustomobject]@{action=$Action;status='inspected';view=$view;plan=$plan;snapshot=$public;undo=$undo;adapters=$adapters;details=Format-PCInspection $public}
+                return [pscustomobject]@{action=$Action;status='inspected';clients=$clients;client_observation=$clientObservation;proxy_summary=(Get-PCProxySummary $public $clients $clientObservation);view=$view;plan=$plan;snapshot=$public;undo=$undo;adapters=$adapters;details=Format-PCInspection $public}
             }
             'Repair'{
                 if(-not $Plan){$Plan=Get-PCRepairPlan -Snapshot (Get-PCSnapshot -Progress $Progress) -Direct:$Direct}

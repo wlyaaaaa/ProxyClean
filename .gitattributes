@@ -1,6 +1,7 @@
-# 这些脚本必须以 CRLF 检出，否则 Windows 的 cmd / cscript 解析会错乱
-# （UTF-8/LF 的 .bat 会把中文和 URL 拆碎，报 "xxx 不是内部或外部命令"）
+# Windows batch and PowerShell scripts use CRLF on checkout.
 *.bat   eol=crlf
-*.vbs   eol=crlf
 *.ps1   eol=crlf
 *.cmd   eol=crlf
+# VBS launchers are UTF-16LE with BOM and contain their own CRLF pairs.
+# Byte-based Git newline conversion would split UTF-16 code units.
+*.vbs   -text

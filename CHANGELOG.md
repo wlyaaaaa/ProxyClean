@@ -1,5 +1,16 @@
 # Changes
 
+## 2026-09-22: two daily intents, separate maintenance
+
+- Replaced the homepage toolbox with one stable repair action and one secondary client-disconnect action. Technical controls live in a separate maintenance window; detailed logs are chronological and collapsed in a separate details window.
+- Group recognized controllers, cores and helpers by client. Discover actual ports, preserve other clients, ask for a client only when several are running, and retain client selection across same-user elevation.
+- Preview normal client/service exit before effects. Force-close requires a separate confirmation and fresh identity check; restart or port takeover blocks cleanup. Related multi-port references use one reversible settings operation, not successive undo records.
+- Automatically verify configuration and basic webpage connectivity after confirmed repair/close. Preserved PAC, tunnels, other clients and application-specific proxy settings remain explicit limitations, never hidden behind a generic direct-connect success.
+- Preserved UTF-16 VBS launchers byte-for-byte across Git checkout; Git text newline conversion had corrupted fresh-checkout launchers despite a working local copy.
+- Kept one daily root launcher; moved historical batch/VBS shortcuts into `旧版入口/` with corrected relative paths. The launcher now validates all three XAML views and the client workflow module.
+- All 181 regression tests pass in PowerShell 7.6.4 and Windows PowerShell 5.1; actual WPF smoke tests, six read-only GUI navigation paths, and real isolated cooperative/uncooperative client shutdown paths were verified. The user's live proxy and settings were not modified by acceptance tests.
+
+
 ## 2026-09-22: launch and handoff closeout
 
 - Both root entries check the complete package and show Chinese errors for missing files, startup failures and abnormal child exits. Module initialization is inside the visible error boundary.

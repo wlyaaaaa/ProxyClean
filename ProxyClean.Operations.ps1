@@ -22,15 +22,16 @@ function New-PCStep {
 }
 function Get-PCRepairPlan {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Snapshot,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0)
+    param([Parameter(Mandatory)]$Snapshot,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[ValidateRange(1,65535)][int[]]$Ports=@())
+    $targetPorts=@(@(if($Port){$Port})+@($Ports)|Sort-Object -Unique)
     $steps=New-Object 'Collections.Generic.List[object]'
     $warnings=New-Object 'Collections.Generic.List[string]'
     $listenerKnown=$Snapshot.availability.listeners -eq 'observed'
     $absent=[pscustomobject][ordered]@{exists=$false;value=$null;kind=$null}
     if($Snapshot.availability.wininet -eq 'observed' -and $Snapshot.systemProxy){
         $proxy=$Snapshot.systemProxy
-        if($Port -gt 0 -and $proxy.enabled){
-            $remove=Remove-PCProxyEndpoint -Value $proxy.server -Port $Port
+        if($targetPorts.Count -gt 0 -and $proxy.enabled){
+            $remove=Remove-PCProxyEndpoints -Value $proxy.server -Ports $targetPorts
             if($remove.changed){
                 if($remove.value){$steps.Add((New-PCStep 'WinInet' 'ProxyServer' $proxy.values.ProxyServer ([pscustomobject][ordered]@{exists=$true;value=$remove.value;kind='String'}) 'Remove only the requested local endpoint; preserve other mappings.'))}
                 else{$steps.Add((New-PCStep 'WinInet' 'ProxyEnable' $proxy.values.ProxyEnable ([pscustomobject][ordered]@{exists=$true;value=0;kind='DWord'}) 'No remaining endpoint after removing the requested local proxy.'))}
@@ -43,7 +44,7 @@ function Get-PCRepairPlan {
     if($Snapshot.availability.environment -eq 'observed'){
         foreach($row in @($Snapshot.environment|Where-Object{$_.scope -eq 'User' -and -not [string]::IsNullOrEmpty($_.value)})){
             $after=$null;$change=$false
-            if($Port -gt 0){$r=Remove-PCProxyEndpoint $row.value $Port;$change=$r.changed;if($r.value){$after=[pscustomobject][ordered]@{exists=$true;value=$r.value;kind=$row.registry.kind}}else{$after=$absent}}
+            if($targetPorts.Count -gt 0){$r=Remove-PCProxyEndpoints $row.value $targetPorts;$change=$r.changed;if($r.value){$after=[pscustomobject][ordered]@{exists=$true;value=$r.value;kind=$row.registry.kind}}else{$after=$absent}}
             elseif($Direct -or (Test-LocalProxyDead -Value $row.value -Listeners $Snapshot.listeners -QuerySucceeded $listenerKnown)){$change=$true;$after=$absent}
             if($change){$steps.Add((New-PCStep 'UserEnv' $row.name $row.registry $after 'Change only the selected current-user proxy variable; NO_PROXY remains untouched.'))}
         }
@@ -53,8 +54,8 @@ function Get-PCRepairPlan {
             $before=@($row.values);if(-not $before.Count){continue}
             if(-not (Get-PCValue $row 'writable' $false)){$warnings.Add('A Git proxy uses included, ambiguous or unavailable configuration; preserved.');continue}
             $after=@();$change=$false
-            if($Port -gt 0){
-                foreach($value in $before){$r=Remove-PCProxyEndpoint $value $Port;if($r.changed){$change=$true};if($r.value -or -not $r.changed){$after+=@($r.value)}}
+            if($targetPorts.Count -gt 0){
+                foreach($value in $before){$r=Remove-PCProxyEndpoints $value $targetPorts;if($r.changed){$change=$true};if($r.value -or -not $r.changed){$after+=@($r.value)}}
             }elseif($Direct){$change=$true}
             elseif(@($before|Where-Object{-not (Test-LocalProxyDead -Value $_ -Listeners $Snapshot.listeners -QuerySucceeded $listenerKnown)}).Count -eq 0){$change=$true}
                         if($change){
@@ -64,7 +65,7 @@ function Get-PCRepairPlan {
             }
         }
     }
-    if($Port -eq 0 -and $Snapshot.availability.routes -eq 'observed' -and $Snapshot.availability.adapters -eq 'observed'){
+    if($targetPorts.Count -eq 0 -and $Snapshot.availability.routes -eq 'observed' -and $Snapshot.availability.adapters -eq 'observed'){
         $physical=@($Snapshot.routes|Where-Object{Test-PCPhysicalRoute $_ $Snapshot.adapters})
         if(-not $physical.Count){$warnings.Add('No verified physical IPv4 default route: no route deletion is planned.')}
         else{
@@ -91,7 +92,7 @@ function Get-PCRepairPlan {
             $step|Add-Member -NotePropertyName preview_server -NotePropertyValue $Snapshot.systemProxy.values.ProxyServer
         }
         if($step.kind -in @('WinInet','UserEnv','Git')){
-            if($Port -gt 0){$step|Add-Member -NotePropertyName required_closed_port -NotePropertyValue $Port}
+            if($targetPorts.Count -gt 0){$step|Add-Member -NotePropertyName required_closed_ports -NotePropertyValue @($targetPorts)}
             elseif(-not $Direct){
                 $values=switch($step.kind){'WinInet'{@($Snapshot.systemProxy.server)}'UserEnv'{@([string]$step.before.value)}'Git'{@($step.before)}}
                 $step|Add-Member -NotePropertyName required_dead_values -NotePropertyValue @($values)
@@ -99,7 +100,7 @@ function Get-PCRepairPlan {
         }
     }
     [pscustomobject]@{schema='proxyclean.plan.v1';id=[Guid]::NewGuid().ToString('N');sid=$Snapshot.sid;observedUtc=$Snapshot.observedUtc
-        mode=if($Port){'port'}elseif($Direct){'manual-user-direct'}else{'dead-local-cleanup'};port=$Port;steps=$steps.ToArray();warnings=$warnings.ToArray()
+        mode=if($targetPorts.Count){'port'}elseif($Direct){'manual-user-direct'}else{'dead-local-cleanup'};port=$Port;ports=@($targetPorts);steps=$steps.ToArray();warnings=$warnings.ToArray()
         limits=@('WinHTTP, PAC, machine environment, URL-scoped Git and consumer configs are preserved.','Undo covers one operation, not stopped processes, DNS caches or other applications.','Already running applications may retain inherited proxy environment variables.')}
 }
 function ConvertTo-PCPublicPlan {
@@ -348,4 +349,10 @@ function Set-PCGitAtomicValues {
         if($current -cne $before -or -not(Test-PCSameValue @(Get-PCGitValues -Key $Step.name) @($expected))){throw 'Git configuration changed before replacement; preserved.'}
         [IO.File]::Replace($lockPath,$path,[NullString]::Value);$owned=$false
     }finally{if($owned -and (Test-Path -LiteralPath $lockPath)){Remove-Item -LiteralPath $lockPath -Force}}
+}
+function Remove-PCProxyEndpoints {
+    param([string]$Value,[int[]]$Ports)
+    $current=$Value;$changed=$false
+    foreach($port in $Ports){$r=Remove-PCProxyEndpoint -Value $current -Port $port;if($r.changed){$changed=$true};$current=$r.value}
+    [pscustomobject]@{changed=$changed;value=$current}
 }

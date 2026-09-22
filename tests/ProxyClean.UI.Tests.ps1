@@ -10,6 +10,7 @@ BeforeAll {
         if(-not $function){throw ('Missing GUI handler: '+$name)}
         . ([scriptblock]::Create($function.Extent.Text))
     }
+    function Open-PCMaintenance {}
     function Request-PCElevation {param([string]$Action='Control')throw 'Unexpected elevation'}
     function Confirm-PCAction {param([string]$Message,[string]$Title)throw 'Unexpected confirmation'}
     function Start-PCWork {param([string]$Action,[hashtable]$Options=@{})throw 'Unexpected effect'}

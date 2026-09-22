@@ -1,9 +1,9 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns')][string]$Action='Control',
+param([ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns','Disconnect')][string]$Action='Control',
     [ValidateRange(0,65535)][int]$Port=0,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any',
-    [ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns')][string]$InitialAction='Control',
-    [string]$InterfaceAlias,[string]$ExpectedSid,[switch]$Elevated,[switch]$PreviewLaunch)
+    [ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns','Disconnect')][string]$InitialAction='Control',
+    [string]$InterfaceAlias,[string]$ClientKey,[string]$ExpectedSid,[switch]$Elevated,[switch]$PreviewLaunch)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
 $pwsh=Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
@@ -14,6 +14,7 @@ $arguments=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-STA','-WindowS
 if($Port){$arguments+=@('-Port',[string]$Port)}
 if($ExpectedClient -ne 'Any'){$arguments+=@('-ExpectedClient',$ExpectedClient)}
 if($InterfaceAlias){$arguments+=@('-InterfaceAlias',$InterfaceAlias)}
+if($ClientKey){$arguments+=@('-ClientKey',$ClientKey)}
 if($ExpectedSid){$arguments+=@('-ExpectedSid',$ExpectedSid)}
 $argumentLine=($arguments|ForEach-Object{ConvertTo-PCArgument ([string]$_)}) -join ' '
 if($PreviewLaunch){[pscustomobject]@{executable=$exe;arguments=$arguments;argument_line=$argumentLine;elevate=[bool]$Elevated;side_effects=$false;preview_first=$true}|ConvertTo-Json -Depth 5;return}
