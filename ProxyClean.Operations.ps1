@@ -230,7 +230,7 @@ function Invoke-PCRepairPlan {
     try{
         $old=Get-PCJournal
         if($old -and $old.phase -notin @('completed','undone')){throw 'An unfinished cleanup exists. Inspect or undo it before another operation.'}
-        Write-PCProgress $Progress 'revalidate' '正在复查：准备修改的设置是否仍然失效…'
+        Write-PCProgress $Progress 'revalidate' '正在复查：准备修改的设置是否仍与检查结果一致…'
         try{
             foreach($step in $selected){
                 Assert-PCStepCondition -Step $step

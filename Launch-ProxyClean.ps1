@@ -1,8 +1,8 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control')][string]$Action='Control',
+param([ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns')][string]$Action='Control',
     [ValidateRange(0,65535)][int]$Port=0,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any',
-    [ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control')][string]$InitialAction='Control',
+    [ValidateSet('Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns')][string]$InitialAction='Control',
     [string]$InterfaceAlias,[string]$ExpectedSid,[switch]$Elevated,[switch]$PreviewLaunch)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
@@ -10,7 +10,7 @@ $pwsh=Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
 $exe=if(Test-Path -LiteralPath $pwsh){$pwsh}else{Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'}
 # All double-click entries open a preview-first GUI, never a destructive command.
 $initial=if($Action -eq 'Control'){$InitialAction}else{$Action}
-$arguments=@('-NoLogo','-NoProfile','-STA','-WindowStyle','Hidden','-File',(Join-Path $PSScriptRoot 'ControlCenter.ps1'),'-InitialAction',$initial)
+$arguments=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-STA','-WindowStyle','Hidden','-File',(Join-Path $PSScriptRoot 'ControlCenter.ps1'),'-InitialAction',$initial)
 if($Port){$arguments+=@('-Port',[string]$Port)}
 if($ExpectedClient -ne 'Any'){$arguments+=@('-ExpectedClient',$ExpectedClient)}
 if($InterfaceAlias){$arguments+=@('-InterfaceAlias',$InterfaceAlias)}

@@ -1,14 +1,12 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param([switch]$SelfTest,[switch]$AsJson,[switch]$SmokeTest,
-    [ValidateSet('Control','Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort')][string]$InitialAction='Control',
+    [ValidateSet('Control','Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Undo','IPv6Enable','IPv6Disable','FlushDns')][string]$InitialAction='Control',
     [ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[string]$ExpectedSid,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any')
 $ErrorActionPreference='Stop'
-Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
-if($AsJson){ConvertTo-PCPublicSnapshot (Get-PCSnapshot)|ConvertTo-Json -Depth 12;return}
-Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+
 $window=$null
-$script:pc=@{ui=@{};job=$null;inspection=$null;pending=$null;intent='Inspect';copy=$null;closing=$false;ticks=0;admin=(Test-PCAdministrator);initial=$false;lastMessage='';direct=$false;resumeAction=$null;legacyClient=$ExpectedClient}
+$script:pc=@{ui=@{};job=$null;inspection=$null;pending=$null;intent='Inspect';copy=$null;closing=$false;ticks=0;admin=$false;initial=$false;lastMessage='';direct=$false;resumeAction=$null;legacyClient=$ExpectedClient}
 function Set-PCScreen {
     param([string]$Title,[string]$Message,[string]$Primary='重新检查',[string]$Intent='Inspect',[string]$Tone='good',[object[]]$Actions=@())
     $pc.ui.Headline.Text=$Title;$pc.ui.Explanation.Text=$Message
@@ -37,6 +35,12 @@ function Set-PCBusy {
 function Start-PCWork {
     param([string]$Action,[hashtable]$Options=@{})
     if($pc.job){return}
+    $pc.resumeAction=switch($Action){
+        'Repair'{if($pc.direct){'Direct'}else{'Clean'}}
+        {$_ -in @('Stop','StopPreview')}{'StopPort'}
+        'Inspect'{if($Options.Direct){'Direct'}else{'Control'}}
+        default{$Action}
+    }
     $pc.ui.PageScroll.ScrollToTop()
     $readOnly=$Action -in @('Inspect','Connectivity','StopPreview','IPv6Status','ExitProbe')
     $queue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
@@ -66,12 +70,18 @@ function Start-PCWork {
         $pc.job=@{worker=$worker;runspace=$runspace;async=$async;queue=$queue;control=$control;watch=[Diagnostics.Stopwatch]::StartNew();action=$Action;readOnly=$readOnly}
     }catch{$worker.Dispose();$runspace.Dispose();Set-PCBusy $false;Set-PCScreen '操作未启动' (ConvertTo-PCFriendlyError $_) -Tone error}
 }
+function Get-PCElevationOptions {
+    param([string]$Action='Control')
+    $launch=@{Action='Control';Elevated=$true;InitialAction=$Action;ExpectedSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;ExpectedClient=$pc.legacyClient}
+    [int]$selectedPort=0
+    if([int]::TryParse($pc.ui.PortInput.Text,[ref]$selectedPort) -and $selectedPort -ge 1 -and $selectedPort -le 65535){$launch.Port=$selectedPort}
+    if($pc.ui.AdapterCombo.SelectedItem -and $pc.ui.AdapterCombo.SelectedItem.name){$launch.InterfaceAlias=[string]$pc.ui.AdapterCombo.SelectedItem.name}
+    return $launch
+}
 function Request-PCElevation {
     param([string]$Action='Control')
     try{
-        $launch=@{Action='Control';Elevated=$true;InitialAction=$Action;ExpectedSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
-        if($pc.ui.PortInput.Text -match '^\d+$'){$launch.Port=[int]$pc.ui.PortInput.Text}
-        if($pc.ui.AdapterCombo.SelectedItem){$launch.InterfaceAlias=$pc.ui.AdapterCombo.SelectedItem.name}
+        $launch=Get-PCElevationOptions $Action
         & (Join-Path $PSScriptRoot 'Launch-ProxyClean.ps1') @launch
         Add-PCLog '已请求管理员窗口。新窗口会重新检查，不会自动执行修改。'
         $window.Close()
@@ -172,9 +182,16 @@ function Invoke-PCPrimary {
         }
         'Stop'{if($pc.pending){Start-PCWork Stop @{Plan=$pc.pending}}else{Start-PCWork Inspect}}
         'Undo'{
+            try{$undo=Get-PCUndoSummary}catch{Set-PCScreen '无法读取恢复记录' (ConvertTo-PCFriendlyError $_) -Tone error;return}
+            if(-not $pc.admin -and @($undo.resources|Where-Object{$_ -like 'Route:*'}).Count){Request-PCElevation 'Undo';return}
             if(Confirm-PCAction '只恢复上次修改中仍未被其他程序改动的设置。不会重启已经结束的程序。继续？' '恢复上次修改'){Start-PCWork Undo}
         }
-        'Elevate'{Request-PCElevation}
+        'Elevate'{Request-PCElevation $(if($pc.resumeAction){$pc.resumeAction}else{'Control'})}
+        {$_ -in @('WifiSoft','WifiReset','IPv6Enable','IPv6Disable')}{
+            $labels=@{WifiSoft='刷新连接';WifiReset='重启网卡';IPv6Enable='启用 IPv6';IPv6Disable='禁用 IPv6'}
+            Invoke-PCAdapterAction $pc.intent $labels[$pc.intent]
+        }
+        'FlushDns'{Invoke-PCDnsAction}
         default{Start-PCWork $pc.intent}
     }
 }
@@ -183,14 +200,43 @@ function Invoke-PCAdapterAction {
     $selected=$pc.ui.AdapterCombo.SelectedItem
     if(-not $selected -or -not $selected.name){[void][Windows.MessageBox]::Show($window,'请先在“网卡与连接”下选择要操作的物理网卡。','请选择网卡','OK','Information');return}
     if(-not $pc.admin){
-        if(Confirm-PCAction ($Label+'需要管理员权限。授权后会回到检查页面，不会自动修改网卡。') '需要管理员权限'){Request-PCElevation 'WifiReset'}
+        if(Confirm-PCAction ($Label+'需要管理员权限。授权后会回到检查页面，不会自动修改网卡。') '需要管理员权限'){Request-PCElevation $Action}
         return
     }
     if(Confirm-PCAction ($Label+'：'+$selected.name+"。`n`n可能暂时断网；代理设置的恢复按钮不能撤销这项网卡操作。正在远程控制这台电脑时，请谨慎选择。") $Label){
         Start-PCWork $Action @{InterfaceAlias=[string]$selected.name}
     }
 }
+function Invoke-PCDnsAction {
+    if(Confirm-PCAction '只清空本机域名解析缓存，不修改 DNS 服务器。此操作不能通过代理设置恢复按钮撤销。继续？' '刷新域名缓存'){Start-PCWork FlushDns}
+}
+function Show-PCInitialAction {
+    param([string]$Action)
+    if($pc.inspection.view.blocked){return}
+    switch($Action){
+        'StopPort'{if($Port){Start-PCWork StopPreview @{Port=$Port;ExpectedClient=$pc.legacyClient}}}
+        'IPv6Status'{Start-PCWork IPv6Status}
+        'Status'{$pc.ui.DetailsExpander.IsExpanded=$true;$pc.ui.DetailsExpander.BringIntoView()}
+        'Undo'{
+            $pc.ui.UndoButton.Visibility='Collapsed'
+            if($pc.inspection.undo.available){Set-PCScreen '准备恢复上次修改' '会先确认恢复范围，只恢复仍属于上次操作的设置。不会重新启动已结束的程序。' '恢复上次修改' 'Undo'}
+            else{Set-PCScreen '没有可恢复的修改' '尚无修改记录，或上次修改已经恢复。'}
+        }
+        'FlushDns'{Set-PCScreen '准备刷新域名缓存' '只刷新缓存，不更换 DNS 服务器。确认后才执行。' '刷新域名缓存…' 'FlushDns'}
+        {$_ -in @('WifiSoft','WifiReset','IPv6Enable','IPv6Disable','IPv6Toggle')}{
+            $labels=@{WifiSoft='刷新连接';WifiReset='重启网卡';IPv6Enable='启用 IPv6';IPv6Disable='禁用 IPv6';IPv6Toggle='选择 IPv6 操作'}
+            if($Action -eq 'IPv6Toggle'){Set-PCScreen $labels[$Action] '请在下方选择物理网卡，再点击“启用 IPv6”或“禁用 IPv6”。确认前不会修改设置。' '查看 IPv6 状态' 'IPv6Status'}
+            else{Set-PCScreen ('准备'+$labels[$Action]) '请在下方选择物理网卡，再点击对应操作。连接可能暂时中断，确认前不会修改设置。' ($labels[$Action]+'…') $Action 'warning'}
+            $pc.ui.AdvancedExpander.IsExpanded=$true
+            $pc.ui.AdapterCombo.BringIntoView()
+        }
+    }
+}
 try{
+    if(-not $AsJson){Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase}
+    Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
+    if($AsJson){ConvertTo-PCPublicSnapshot (Get-PCSnapshot)|ConvertTo-Json -Depth 12;return}
+    $pc.admin=Test-PCAdministrator
     $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if($ExpectedSid -and $ExpectedSid -ne $sid){throw '启动账户发生变化。请用原 Windows 账户授权，避免修改其他用户的代理设置。'}
     $reader=[Xml.XmlReader]::Create((Join-Path $PSScriptRoot 'ControlCenter.xaml'))
@@ -220,7 +266,7 @@ try{
     $pc.ui.IPv6EnableButton.Add_Click({Invoke-PCAdapterAction IPv6Enable '启用 IPv6'})
     $pc.ui.IPv6DisableButton.Add_Click({Invoke-PCAdapterAction IPv6Disable '禁用 IPv6'})
     $pc.ui.IPv6StatusButton.Add_Click({Start-PCWork IPv6Status})
-    $pc.ui.DnsButton.Add_Click({if(Confirm-PCAction '只清空本机域名解析缓存，不修改 DNS 服务器。此操作不能通过代理设置恢复按钮撤销。继续？' '刷新域名缓存'){Start-PCWork FlushDns}})
+    $pc.ui.DnsButton.Add_Click({Invoke-PCDnsAction})
     $timer=[Windows.Threading.DispatcherTimer]::new();$timer.Interval=[TimeSpan]::FromMilliseconds(120)
     $timer.Add_Tick({
         if(-not $pc.job){return}
@@ -248,9 +294,7 @@ try{
         if($pc.closing){$window.Close();return}
         if(-not $pc.initial){
             $pc.initial=$true
-            if($InitialAction -notin @('Control','Clean','Direct')){$pc.ui.AdvancedExpander.IsExpanded=$true}
-            if($InitialAction -eq 'StopPort' -and $Port){Start-PCWork StopPreview @{Port=$Port;ExpectedClient=$pc.legacyClient}}
-            elseif($InitialAction -eq 'IPv6Status'){Start-PCWork IPv6Status}
+            if($result.status -eq 'inspected' -and -not $pc.renderFailure){Show-PCInitialAction $InitialAction}
         }
     })
     $window.Add_ContentRendered({if(-not $pc.initial -and -not $pc.job){Start-PCWork Inspect @{Direct=($InitialAction -eq 'Direct')}}})
@@ -265,8 +309,11 @@ try{
     $timer.Start();[void]$window.ShowDialog()
     if($SmokeTest){if(-not $pc.smokeResult){throw 'GUI smoke test returned no result.'};$pc.smokeResult|ConvertTo-Json -Compress;if($pc.smokeResult.status -ne 'pass'){throw 'GUI smoke test failed.'}}
 }catch{
-    if($SelfTest -or $SmokeTest){throw}
-    [void][Windows.MessageBox]::Show(('ProxyClean 未能打开。请确认整个文件夹完整，并使用 Windows PowerShell 5.1 或 PowerShell 7。'+"`n`n"+$_.Exception.Message),'启动失败','OK','Error')
+    if($SelfTest -or $SmokeTest -or $AsJson){throw}
+    $message='ProxyClean 未能打开。请保留完整文件夹，重新解压后双击“00-打开 ProxyClean”。需要 Windows PowerShell 5.1 或 PowerShell 7。'
+    if($ExpectedSid -and $ExpectedSid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value){$message='启动账户发生变化，未开始检查或修改。请使用原 Windows 账户授权后再打开，不要切换为另一位管理员。'}
+    if('Windows.MessageBox' -as [type]){[void][Windows.MessageBox]::Show($message,'启动失败','OK','Error')}
+    else{[void](New-Object -ComObject WScript.Shell).Popup($message,0,'启动失败',16)}
 }finally{
     if(Get-Variable timer -ErrorAction SilentlyContinue){$timer.Stop()}
     if($pc.job -and $pc.job.async.IsCompleted){$pc.job.worker.Dispose();$pc.job.runspace.Dispose();$pc.job=$null}
