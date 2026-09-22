@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Sourced by ProxyClean.Common. Effects are isolated from endpoint classification.
 function Get-PCRegistryValue {
     param([ValidateSet('WinInet','UserEnv')][string]$Area,[string]$Name)
@@ -84,6 +84,20 @@ function Get-PCRepairPlan {
         }
     }
     if(@($Snapshot.availability.PSObject.Properties|Where-Object Value -eq 'unknown').Count){$warnings.Add('Some layers are unknown; no absence or recovery conclusion is inferred for them.')}
+    # Keep these conditions private, like preimages. A stable ProxyEnable value
+    # alone does not prove that the proxy server or its listener is unchanged.
+    foreach($step in $steps){
+        if($step.kind -eq 'WinInet'){
+            $step|Add-Member -NotePropertyName preview_server -NotePropertyValue $Snapshot.systemProxy.values.ProxyServer
+        }
+        if($step.kind -in @('WinInet','UserEnv','Git')){
+            if($Port -gt 0){$step|Add-Member -NotePropertyName required_closed_port -NotePropertyValue $Port}
+            elseif(-not $Direct){
+                $values=switch($step.kind){'WinInet'{@($Snapshot.systemProxy.server)}'UserEnv'{@([string]$step.before.value)}'Git'{@($step.before)}}
+                $step|Add-Member -NotePropertyName required_dead_values -NotePropertyValue @($values)
+            }
+        }
+    }
     [pscustomobject]@{schema='proxyclean.plan.v1';id=[Guid]::NewGuid().ToString('N');sid=$Snapshot.sid;observedUtc=$Snapshot.observedUtc
         mode=if($Port){'port'}elseif($Direct){'manual-user-direct'}else{'dead-local-cleanup'};port=$Port;steps=$steps.ToArray();warnings=$warnings.ToArray()
         limits=@('WinHTTP, PAC, machine environment, URL-scoped Git and consumer configs are preserved.','Undo covers one operation, not stopped processes, DNS caches or other applications.','Already running applications may retain inherited proxy environment variables.')}
@@ -207,7 +221,7 @@ function Restore-PCJournal {
 }
 function Invoke-PCRepairPlan {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Medium')]
-    param([Parameter(Mandatory)]$Plan)
+    param([Parameter(Mandatory)]$Plan,[scriptblock]$Progress)
     if($Plan.schema -ne 'proxyclean.plan.v1'){throw 'Unsupported repair plan.'}
     if([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem -or $Plan.sid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value){throw 'Apply must run as the same intended Windows user, never SYSTEM.'}
     $selected=@(foreach($step in @($Plan.steps)){if($PSCmdlet.ShouldProcess($step.kind+':'+$step.name,$step.reason)){$step}})
@@ -216,19 +230,32 @@ function Invoke-PCRepairPlan {
     try{
         $old=Get-PCJournal
         if($old -and $old.phase -notin @('completed','undone')){throw 'An unfinished cleanup exists. Inspect or undo it before another operation.'}
+        Write-PCProgress $Progress 'revalidate' '正在复查：准备修改的设置是否仍然失效…'
+        try{
+            foreach($step in $selected){
+                Assert-PCStepCondition -Step $step
+                if(-not(Test-PCSameValue (Get-PCResourceValue $step) $step.before)){throw 'Configuration changed after preview; preserved.'}
+            }
+        }
+        catch{return [pscustomobject]@{status='plan_changed';changed=0;message=ConvertTo-PCFriendlyError $_;network_recovered='not_tested'}}
+        Write-PCProgress $Progress 'backup' '正在保存修改前的设置，便于恢复…'
         $journal=[pscustomobject]@{schema='proxyclean.undo.v1';id=$Plan.id;sid=$Plan.sid;phase='applying';startedUtc=[DateTimeOffset]::UtcNow.ToString('O');steps=@($selected | ForEach-Object { $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json });remaining=@()}
         Save-PCJournal $journal
         $changed=0
         try{
             foreach($step in @($journal.steps)){
                 if(-not(Test-PCSameValue (Get-PCResourceValue $step) $step.before)){throw 'Configuration changed after preview; preserved.'}
+                Assert-PCStepCondition -Step $step
+                Write-PCProgress $Progress 'apply' ('正在处理：'+(Get-PCStepLabel $step)+'…')
                 $step.phase='prepared';Save-PCJournal $journal
                 Set-PCResourceValue -Step $step -Value $step.after
+                Write-PCProgress $Progress 'verify' ('正在核验：'+(Get-PCStepLabel $step)+'…')
                 if(-not(Test-PCSameValue (Get-PCResourceValue $step) $step.after)){throw 'Configuration write could not be verified.'}
                 $step.phase='applied';Save-PCJournal $journal;$changed++
             }
             $journal.phase='completed';Save-PCJournal $journal
         }catch{
+            Write-PCProgress $Progress 'rollback' '修改未完成，正在恢复本次已经改动的设置…'
             $failureId=$_.FullyQualifiedErrorId;$recovery=Restore-PCJournal $journal
             return [pscustomobject]@{status=if($recovery.status -eq 'recovered'){'failed_rolled_back'}else{'recovery_required'};changed_before_failure=$changed;remaining=$recovery.remaining;failure_id=$failureId;failure_details=$recovery.failure_details;network_recovered='not_tested'}
         }

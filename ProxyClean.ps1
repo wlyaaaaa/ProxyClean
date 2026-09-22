@@ -1,48 +1,60 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    预览或清理当前用户的失效本地代理，并保留一轮可核对的撤销。
+    预览或清理失效本地代理，修改前保存恢复记录，修改后回读核验。
 .DESCRIPTION
-    默认只处理死本地端点。Direct 仅关闭手动 WinINET、用户代理环境变量和全局通用 Git 代理；
-    PAC、WinHTTP、机器环境、应用配置和 URL 专属 Git 设置不被隐式改写。
-    脚本完成不等于全系统已直连；配置回读与 HTTP 探测分别报告。
+    双击使用请打开 00-打开 ProxyClean.vbs。此入口供命令行使用。
+    默认不刷新 DNS；FlushDns 显式启用。GUI 与命令行共用执行流程。
 #>
 [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Medium')]
-param([switch]$Direct,[switch]$Quiet,[switch]$Preview,[switch]$Undo,[Alias('AsJson')][switch]$Json,[switch]$SkipConnectivityChecks)
+param([switch]$Direct,[switch]$Quiet,[switch]$Preview,[switch]$Undo,
+    [Alias('AsJson')][switch]$Json,[switch]$SkipConnectivityChecks,[switch]$FlushDns)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
+$progress=$null
+if(-not $Json -and -not $Quiet){$progress={param($Stage,$Message) Write-Host $Message}}
 try{
     if($Undo){
         if($Preview -or $WhatIfPreference){$result=[pscustomobject]@{status='preview';undo=Get-PCUndoSummary}}
-        elseif($PSCmdlet.ShouldProcess('上次 ProxyClean 操作','仅撤销仍与上次结果一致的设置')){$result=Invoke-PCUndo -Confirm:$false; if($result.status -eq 'recovered'){[void](Send-PCSettingsChanged)}}
+        elseif($PSCmdlet.ShouldProcess('上次 ProxyClean 修改','只恢复仍属于上次操作的设置')){$result=Invoke-PCWorkflow -Action Undo -Progress $progress -Confirm:$false}
         else{$result=[pscustomobject]@{status='declined'}}
     }else{
-        $plan=Get-PCRepairPlan -Snapshot (Get-PCSnapshot) -Direct:$Direct
+        $plan=Get-PCRepairPlan -Snapshot (Get-PCSnapshot -Progress $progress) -Direct:$Direct
         if($Preview -or $WhatIfPreference){$result=[pscustomobject]@{status='preview';plan=ConvertTo-PCPublicPlan $plan}}
-        else{
-                        $invoke=@{Plan=$plan}
-            if($PSBoundParameters.ContainsKey('Confirm')){$invoke.Confirm=$PSBoundParameters['Confirm']}
-            $applied=Invoke-PCRepairPlan @invoke
-            $notification=$null;$dns='not_changed';$probe=[pscustomobject]@{status='not_tested'}
-            if($applied.status -eq 'applied'){$notification=Send-PCSettingsChanged}
-            if($applied.status -in @('applied','no_changes')){
-                if($PSCmdlet.ShouldProcess('本机 DNS 缓存','刷新缓存；不更改 DNS 服务器')){
-                    try{[void](Invoke-PCNative -FilePath (Join-Path $env:WINDIR 'System32\ipconfig.exe') -ArgumentList @('/flushdns'));$dns='flushed'}catch{$dns='failed'}
-                }
-                if(-not $SkipConnectivityChecks){$probe=Test-PCConnectivity}
+        elseif($PSCmdlet.ShouldProcess('检查结果中选定的代理设置','保存原值并执行修复')){
+            $result=Invoke-PCWorkflow -Action Repair -Plan $plan -SkipConnectivityChecks:$SkipConnectivityChecks -Progress $progress -Confirm:$false
+            if($FlushDns -and $result.status -in @('applied','no_changes')){
+                $dns=Invoke-PCWorkflow -Action FlushDns -Progress $progress -Confirm:$false
+                $result.dns_cache=if($dns.status -eq 'dns_flushed'){'flushed'}else{'failed'}
             }
-            $result=[pscustomobject]@{schema='proxyclean.cleanup-result.v1';status=$applied.status;plan=ConvertTo-PCPublicPlan $plan;configuration=$applied;notification=$notification;dns_cache=$dns;connectivity=$probe;all_applications_direct='not_proven'}
+        }else{$result=[pscustomobject]@{status='declined'}}
+    }
+    if($Json){$result|ConvertTo-Json -Depth 14}else{
+        $label=switch($result.status){
+            'preview'{'当前为预览，没有修改设置。'}
+            'applied'{'代理设置已修复，并已回读核验。'}
+            'no_changes'{'没有需要清理的设置，没有修改配置。'}
+            'recovered'{'上次修改已恢复。'}
+            'nothing_to_undo'{'没有可恢复的修改。'}
+            'plan_changed'{'情况已经变化，未继续清理。请重新检查。'}
+            'failed_rolled_back'{'修复未完成，本次改动已恢复。'}
+            'recovery_required'{'部分设置仍需恢复，请使用 -Undo -Preview 查看。'}
+            'declined'{'已取消，没有执行修改。'}
+            default{'操作没有完成，请重新检查。'}
         }
+        Write-Host $label
+        if($result.status -eq 'preview' -and -not $Quiet){
+            if($Undo){foreach($resource in @(Get-PCValue $result.undo 'resources' @())){Write-Host ('将尝试恢复：'+$resource)}}
+            else{foreach($step in $plan.steps){Write-Host ('将处理：'+(Get-PCStepLabel $step))}}
+        }
+        if(Get-PCValue $result 'message'){Write-Host $result.message}
+        $probe=Get-PCValue $result 'connectivity'
+        if($probe){Write-Host $(switch($probe.status){'http_reachable'{'测试网页可以连接，但不代表所有应用均已直连。'}'http_not_confirmed'{'测试网页未能连接，与设置修复结果分别报告。'}default{'尚未确认网页连接。'}})}
     }
-    if($Json){$result|ConvertTo-Json -Depth 12}else{
-        Write-Host ('ProxyClean 结果：'+$result.status)
-        if(-not $Quiet){$result|ConvertTo-Json -Depth 10|Write-Host}
-        Write-Host '配置回读、端口关闭、HTTP 连通和所有应用直连是不同结果。撤销不会重启已关闭的进程。'
-    }
-    if($result.status -in @('failed_rolled_back','recovery_required','failed','incomplete')){exit 1}
+    if($result.status -in @('failed_rolled_back','recovery_required','failed','incomplete','plan_changed')){exit 1}
     if((Get-PCValue $result 'dns_cache') -eq 'failed'){exit 2}
 }catch{
-    $failure=[pscustomobject]@{schema='proxyclean.cleanup-result.v1';status='failed';message='操作未能完成。未把错误当成成功；请查看脱敏诊断和撤销预览。';recovery_hint='.\ProxyClean.ps1 -Undo -Preview'}
-    if($Json){$failure|ConvertTo-Json}else{$failure|Format-List}
+    $failure=[pscustomobject]@{schema='proxyclean.cleanup-result.v1';status='failed';message=ConvertTo-PCFriendlyError $_;error_type=$_.Exception.GetType().FullName}
+    if($Json){$failure|ConvertTo-Json}else{Write-Host $failure.message}
     exit 1
 }

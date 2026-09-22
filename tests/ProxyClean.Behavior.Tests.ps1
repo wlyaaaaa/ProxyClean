@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..\ProxyClean.Common.psm1') -Force
     function New-FixtureSnapshot {
@@ -180,7 +180,7 @@ Describe 'Durable one-operation undo with injected failures' {
     It 'refuses stale plans before their first effect' {
         InModuleScope ProxyClean.Common {
             $script:fixtureValues.HTTP_PROXY=[pscustomobject][ordered]@{exists=$true;value='http://new.example.test:8443';kind='String'}
-            (Invoke-PCRepairPlan $script:fixturePlan -Confirm:$false).status|Should -Be 'failed_rolled_back'
+            (Invoke-PCRepairPlan $script:fixturePlan -Confirm:$false).status|Should -Be 'plan_changed'
             Should -Invoke Set-PCResourceValue -Times 0
         }
     }

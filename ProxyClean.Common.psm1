@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 Set-StrictMode -Version 3
 $ErrorActionPreference='Stop'
 # Resolve the inbox security module from this host, not a parent shell's
@@ -214,12 +214,15 @@ function Get-PCListenerCandidates {
 }
 function Get-PCSnapshot {
     [CmdletBinding()]
-    param([switch]$SkipConsumers)
+    param([switch]$SkipConsumers,[scriptblock]$Progress)
+    Write-PCProgress $Progress 'listeners' '正在检查本机代理是否仍在运行…'
     $availability=[ordered]@{}
     $listeners=@();$adapters=@();$routes=@();$proxy=$null;$environment=@();$git=@()
     try{$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop);$availability.listeners='observed'}catch{$availability.listeners='unknown'}
+    Write-PCProgress $Progress 'network' '正在检查网卡与默认连接…'
     try{$adapters=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop);$availability.adapters='observed'}catch{$availability.adapters='unknown'}
     try{$routes=@(Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop|Where-Object{$_.DestinationPrefix -in @('0.0.0.0/0','::/0')});$availability.routes='observed'}catch{$availability.routes='unknown'}
+    Write-PCProgress $Progress 'settings' '正在读取 Windows 代理与终端设置…'
     try{
         $key=Get-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
         $proxy=[pscustomobject]@{enabled=([int]$key.GetValue('ProxyEnable',0) -eq 1);server=[string]$key.GetValue('ProxyServer','');pac=[string]$key.GetValue('AutoConfigURL','');values=[pscustomobject]@{ProxyEnable=Get-PCRegistryValue -Area WinInet -Name ProxyEnable;ProxyServer=Get-PCRegistryValue -Area WinInet -Name ProxyServer}}
@@ -232,10 +235,12 @@ function Get-PCSnapshot {
             $environment+=@([pscustomobject]@{name=$name;scope=$scope;value=$value;registry=$registry})
         }};$availability.environment='observed'
     }catch{$availability.environment='unknown'}
+    Write-PCProgress $Progress 'git' '正在检查 Git 的代理设置…'
     try{if(Get-PCGitPath){foreach($name in 'http.proxy','https.proxy'){$values=@(Get-PCGitValues $name)
             $target=$null
             if($values.Count){try{$target=Get-PCGitWriteTarget -Key $name}catch{}}
             $git+=@([pscustomobject]@{key=$name;values=$values;target_file=$target;writable=[bool]$target})};$availability.git='observed'}else{$availability.git='not_installed'}}catch{$availability.git='unknown'}
+    Write-PCProgress $Progress 'consumers' '正在核对其他应用的代理使用情况…'
     $winhttp=$null;$docker=$null
     if(-not $SkipConsumers){
         try{$winhttp=Get-PCWinHttpSnapshot;$availability.winhttp='observed'}catch{$availability.winhttp='unknown'}
@@ -271,4 +276,5 @@ function ConvertTo-PCPublicSnapshot {
 }
 . (Join-Path $PSScriptRoot 'ProxyClean.Operations.ps1')
 . (Join-Path $PSScriptRoot 'ProxyClean.Network.ps1')
+. (Join-Path $PSScriptRoot 'ProxyClean.Workflow.ps1')
 Export-ModuleMember -Function '*-PC*','Get-ProxyEndpoints','Get-LocalProxyPorts','Test-LocalProxyDead'
