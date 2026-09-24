@@ -146,7 +146,7 @@ function Invoke-PCWorkflow {
                 $view=Get-PCCheckView -Snapshot $public -Plan $plan -Undo $undo
                 $clients=@();$clientObservation='observed'
                 try{
-                    $endpoints=if($snapshot.systemProxy -and $snapshot.systemProxy.enabled){@(Get-ProxyEndpoints $snapshot.systemProxy.server)}else{@()}
+                    $endpoints=@(if($snapshot.systemProxy -and $snapshot.systemProxy.enabled){Get-ProxyEndpoints $snapshot.systemProxy.server})
                     $clients=@(ConvertTo-PCPublicClients @(Get-PCClientInventory -Listeners $snapshot.listeners -Endpoints $endpoints))
                 }catch{$clientObservation='unknown'}
                 $adapters=@($snapshot.adapters|Where-Object{(Get-PCValue $_ 'HardwareInterface') -eq $true}|ForEach-Object{[pscustomobject]@{name=[string]$_.Name;status=[string]$_.Status}})

@@ -1,5 +1,12 @@
 # Changes
 
+## 2026-09-24: fix disconnect preview with no active system-proxy endpoints
+
+- Keep absent endpoint lists as empty collections, not null pipeline entries, across client previews, home inspection and public snapshot conversion. Optional discovery inputs tolerate null elements without treating them as dead endpoints or weakening required endpoint validation.
+- Fix the pre-shutdown `DisconnectPreview` binding exception when the system proxy is disabled, its address is empty, or the setting could not be read. The same fault no longer hides running clients behind an `unknown` home-page observation.
+- Add 22 regressions that retain the real client-discovery algorithm while isolating operating-system queries and effects. The original code fails 15 of them; the fix passes all 22. All 215 repository tests pass in PowerShell 7.6.4 and Windows PowerShell 5.1.
+- Verify live read-only standard-user and same-user elevated previews, plus actual WPF smoke runs on both hosts. No live proxy client is stopped during acceptance; the existing shutdown confirmations and registry-write repair remain intact.
+
 ## 2026-09-24: fix client-close registry writes
 
 - Replace writes through read-only `Get-Item` registry handles with writable registry-provider operations. Client cleanup can now update WinINET values and remove user proxy variables; undo retains original registry kinds and literal expandable strings.

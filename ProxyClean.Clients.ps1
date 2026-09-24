@@ -16,6 +16,8 @@ function Get-PCClientInventory {
     [CmdletBinding()]
     param([AllowEmptyCollection()][object[]]$Listeners=@(),[AllowEmptyCollection()][object[]]$Endpoints=@(),[AllowEmptyCollection()][object[]]$Processes=@())
     if(-not $PSBoundParameters.ContainsKey('Processes')){$Processes=@(Get-CimInstance Win32_Process -ErrorAction Stop)}
+    # Optional endpoint inputs can be null; absence is not a dead endpoint.
+    $Endpoints=@($Endpoints|Where-Object{$null -ne $_})
     $session=(Get-Process -Id $PID).SessionId
     $all=@{};foreach($p in $Processes){$all[[int]$p.ProcessId]=$p}
     $groups=@{}
@@ -73,7 +75,7 @@ function Get-PCClientClosePreview {
     param([string]$ClientKey,$PreviousPlan,[scriptblock]$Progress)
     Write-PCProgress $Progress 'clients' '正在确认运行中的代理客户端…'
     $snapshot=Get-PCSnapshot -Progress $Progress
-    $endpoints=if($snapshot.systemProxy -and $snapshot.systemProxy.enabled){@(Get-ProxyEndpoints $snapshot.systemProxy.server)}else{@()}
+    $endpoints=@(if($snapshot.systemProxy -and $snapshot.systemProxy.enabled){Get-ProxyEndpoints $snapshot.systemProxy.server})
     $clients=@(Get-PCClientInventory -Listeners $snapshot.listeners -Endpoints $endpoints)
     $undo=Get-PCUndoSummary
     if($undo.phase -notin @('none','undone','completed')){throw 'An unfinished cleanup exists.'}

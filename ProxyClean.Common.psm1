@@ -199,6 +199,8 @@ function Get-PCDockerRuntimeSnapshot {
 function Get-PCListenerCandidates {
     [CmdletBinding()]
     param([AllowEmptyCollection()][object[]]$Listeners=@(),[AllowEmptyCollection()][object[]]$Endpoints=@())
+    # Keep absent endpoint collections out of mandatory listener checks.
+    $Endpoints=@($Endpoints|Where-Object{$null -ne $_})
     $processCache=@{}
     foreach($row in $Listeners){
         $id=[int](Get-PCValue $row 'OwningProcess' 0);if($id -le 0){continue}
@@ -254,7 +256,7 @@ function ConvertTo-PCPublicSnapshot {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Snapshot)
     $proxy=$Snapshot.systemProxy
-    $endpoints=if($proxy -and $proxy.enabled){@(Get-ProxyEndpoints $proxy.server)}else{@()}
+    $endpoints=@(if($proxy -and $proxy.enabled){Get-ProxyEndpoints $proxy.server})
     $rows=@(foreach($e in $endpoints){[pscustomobject]@{endpoint=Get-PCSafeProxyValue $e.raw;local=$e.local;parsed=$e.parsed;state=Get-PCListenerState $e $Snapshot.listeners ($Snapshot.availability.listeners -eq 'observed')}})
     $routeRows=@(foreach($route in $Snapshot.routes){
         $index=Get-PCValue $route 'InterfaceIndex' (Get-PCValue $route 'ifIndex')
