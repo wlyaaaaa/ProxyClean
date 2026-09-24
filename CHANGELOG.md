@@ -1,5 +1,11 @@
 # Changes
 
+## 2026-09-24: fix client-close registry writes
+
+- Replace writes through read-only `Get-Item` registry handles with writable registry-provider operations. Client cleanup can now update WinINET values and remove user proxy variables; undo retains original registry kinds and literal expandable strings.
+- Preserve the existing field allowlist, idempotent deletion, pre-write checks and recovery flow. Dispose read handles after inspection.
+- Add 12 regressions using disposable registry keys and journals, including both FlyingBird and Clash Verge normal/force workflows with all process shutdown and live network effects mocked. The old writer failed 10 of these tests; the corrected writer passes all 12. All 193 repository tests pass in PowerShell 7.6.4 and Windows PowerShell 5.1. No live proxy shutdown was performed.
+
 ## 2026-09-22: two daily intents, separate maintenance
 
 - Replaced the homepage toolbox with one stable repair action and one secondary client-disconnect action. Technical controls live in a separate maintenance window; detailed logs are chronological and collapsed in a separate details window.

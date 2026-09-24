@@ -1,12 +1,18 @@
 ﻿#Requires -Version 5.1
 # Sourced by ProxyClean.Common. Effects are isolated from endpoint classification.
+function Get-PCRegistryPath {
+    param([ValidateSet('WinInet','UserEnv')][string]$Area)
+    if($Area -eq 'WinInet'){'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'}else{'HKCU:\Environment'}
+}
 function Get-PCRegistryValue {
     param([ValidateSet('WinInet','UserEnv')][string]$Area,[string]$Name)
-    $path=if($Area -eq 'WinInet'){'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'}else{'HKCU:\Environment'}
+    $path=Get-PCRegistryPath -Area $Area
     if(-not(Test-Path -LiteralPath $path)){return [pscustomobject][ordered]@{exists=$false;value=$null;kind=$null}}
     $key=Get-Item -LiteralPath $path -ErrorAction Stop
-    if($Name -notin @($key.GetValueNames())){return [pscustomobject][ordered]@{exists=$false;value=$null;kind=$null}}
-    [pscustomobject][ordered]@{exists=$true;value=$key.GetValue($Name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames);kind=[string]$key.GetValueKind($Name)}
+    try{
+        if($Name -notin @($key.GetValueNames())){return [pscustomobject][ordered]@{exists=$false;value=$null;kind=$null}}
+        [pscustomobject][ordered]@{exists=$true;value=$key.GetValue($Name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames);kind=[string]$key.GetValueKind($Name)}
+    }finally{$key.Dispose()}
 }
 function Test-PCSameValue {
     param($Left,$Right)
@@ -160,16 +166,19 @@ function Set-PCResourceValue {
         {$_ -in @('WinInet','UserEnv')}{
             if($Step.kind -eq 'WinInet'){
                 if($Step.name -notin @('ProxyEnable','ProxyServer')){throw 'Unsupported WinINET field.'}
-                $path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+                $path=Get-PCRegistryPath -Area WinInet
             }else{
                 if($Step.name -notin @('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY')){throw 'Unsupported environment field.'}
-                $path='HKCU:\Environment'
+                $path=Get-PCRegistryPath -Area UserEnv
             }
             if($Value.exists){
                 if(-not(Test-Path -LiteralPath $path)){New-Item -Path $path -Force -ErrorAction Stop|Out-Null}
-                $key=Get-Item -LiteralPath $path -ErrorAction Stop
-                $key.SetValue($Step.name,$Value.value,[Microsoft.Win32.RegistryValueKind]$Value.kind)
-            }elseif(Test-Path -LiteralPath $path){$key=Get-Item -LiteralPath $path -ErrorAction Stop;$key.DeleteValue($Step.name,$false)}
+                # Get-Item returns a read-only RegistryKey, even in an elevated host.
+                # Let the provider open a writable handle and preserve the value kind.
+                New-ItemProperty -LiteralPath $path -Name $Step.name -Value $Value.value -PropertyType $Value.kind -Force -ErrorAction Stop|Out-Null
+            }elseif((Get-PCRegistryValue -Area $Step.kind -Name $Step.name).exists){
+                Remove-ItemProperty -LiteralPath $path -Name $Step.name -ErrorAction Stop
+            }
         }
         'Git'{
             if($Step.name -notin @('http.proxy','https.proxy')){throw 'Unsupported Git field.'}
