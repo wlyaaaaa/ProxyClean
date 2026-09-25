@@ -2,11 +2,11 @@
 [CmdletBinding()]
 param([switch]$SelfTest,[switch]$AsJson,[switch]$SmokeTest,
     [ValidateSet('Control','Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Undo','IPv6Enable','IPv6Disable','FlushDns','Disconnect')][string]$InitialAction='Control',
-    [ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[string]$ClientKey,[string]$ExpectedSid,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any')
+    [ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[string]$ClientKey,[string]$ExpectedSid,[string]$ExpectedClientInstance,[switch]$ResumeDisconnect,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any')
 $ErrorActionPreference='Stop'
 
 $window=$null;$maintenance=$null;$detailsWindow=$null
-$script:pc=@{ui=@{};job=$null;inspection=$null;pending=$null;intent='Inspect';copy=$null;closing=$false;ticks=0;admin=$false;initial=$false;lastMessage='';direct=$false;resumeAction=$null;legacyClient=$ExpectedClient;clientKey=$ClientKey;forcePreview=$false;closeContext=$null;home=$false;maintenanceMode=$false;clients=@()}
+$script:pc=@{ui=@{};job=$null;inspection=$null;pending=$null;intent='Inspect';copy=$null;closing=$false;ticks=0;admin=$false;initial=$false;lastMessage='';direct=$false;resumeAction=$null;legacyClient=$ExpectedClient;clientKey=$ClientKey;disconnectRequested=[bool]$ResumeDisconnect;clientInstance=$ExpectedClientInstance;elevationAttempted=[bool]$ResumeDisconnect;home=$false;maintenanceMode=$false;clients=@()}
 function Set-PCScreen {
     param([string]$Title,[string]$Message,[string]$Primary='返回首页',[string]$Intent='Home',[string]$Tone='good',[object[]]$Actions=@())
     $pc.home=$false
@@ -89,22 +89,56 @@ function Start-PCWork {
         $pc.job=@{worker=$worker;runspace=$runspace;async=$async;queue=$queue;control=$control;watch=[Diagnostics.Stopwatch]::StartNew();action=$Action;readOnly=$readOnly}
     }catch{$worker.Dispose();$runspace.Dispose();Set-PCBusy $false;Set-PCScreen '操作未启动' (ConvertTo-PCFriendlyError $_) -Tone error}
 }
+function Start-PCDisconnect {
+    param([string]$SelectedClient)
+    if($pc.job){return}
+    $pc.clientKey=$SelectedClient;$pc.clientInstance=$null;$pc.pending=$null;$pc.resumeAction='Disconnect'
+    $pc.disconnectRequested=$true;$pc.elevationAttempted=$false
+    Start-PCWork DisconnectPreview @{ClientKey=$pc.clientKey}
+}
+function Continue-PCDisconnect {
+    param($Result)
+    if($Result.status -notin @('client_needs_admin','client_preview','choose_client','no_client','failed','cancelled')){return $false}
+    $transition=Get-PCDisconnectTransition $Result.status ([bool]$pc.disconnectRequested) ([bool]$pc.admin) ([bool]$pc.elevationAttempted)
+    switch($transition){
+        'elevate'{
+            $pc.clientKey=$Result.key;$pc.clientInstance=$Result.instance
+            $pc.elevationAttempted=$true
+            Request-PCElevation Disconnect
+            return $true
+        }
+        'apply'{
+            $pc.clientKey=$Result.plan.key;$pc.disconnectRequested=$false
+            Start-PCWork Disconnect @{Plan=$Result.plan}
+            return $true
+        }
+        'permission_failed'{
+            $pc.disconnectRequested=$false
+            Set-PCScreen '未取得关闭所需权限' '本次没有重复申请授权，也没有根据不完整状态继续关闭。' -Tone warning
+            return $true
+        }
+        'stop'{$pc.disconnectRequested=$false}
+    }
+    return $false
+}
 function Get-PCElevationOptions {
     param([string]$Action='Control')
     $launch=@{Action='Control';Elevated=$true;InitialAction=$Action;ExpectedSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;ExpectedClient=$pc.legacyClient}
     [int]$selectedPort=0
     if([int]::TryParse($pc.ui.PortInput.Text,[ref]$selectedPort) -and $selectedPort -ge 1 -and $selectedPort -le 65535){$launch.Port=$selectedPort}
     if($pc.ui.AdapterCombo.SelectedItem -and $pc.ui.AdapterCombo.SelectedItem.name){$launch.InterfaceAlias=[string]$pc.ui.AdapterCombo.SelectedItem.name}
-    if($pc.clientKey){$launch.ClientKey=$pc.clientKey};return $launch
+    if($pc.clientKey){$launch.ClientKey=$pc.clientKey}
+    if($Action -eq 'Disconnect' -and $pc.disconnectRequested){$launch.ResumeDisconnect=$true;$launch.ExpectedClientInstance=$pc.clientInstance}
+    return $launch
 }
 function Request-PCElevation {
     param([string]$Action='Control')
     try{
         $launch=Get-PCElevationOptions $Action
         & (Join-Path $PSScriptRoot 'Launch-ProxyClean.ps1') @launch
-        Add-PCLog '已请求管理员窗口。新窗口会重新检查，不会自动执行修改。'
+        Add-PCLog $(if($launch.ResumeDisconnect){'授权后将核验同一客户端，并继续本次关闭。'}else{'已请求管理员窗口。新窗口会重新检查，不会自动执行修改。'})
         $window.Close()
-    }catch{Set-PCScreen '没有取得管理员权限' '你取消了授权，或 Windows 未能打开管理员窗口。当前没有因此修改设置。';Add-PCLog '授权未完成，原窗口仍可使用。'}
+    }catch{$pc.disconnectRequested=$false;Set-PCScreen '没有取得管理员权限' '你取消了授权，或 Windows 未能打开管理员窗口。当前没有因此修改设置。';Add-PCLog '授权未完成，原窗口仍可使用。'}
 }
 function Confirm-PCAction {
     param([string]$Message,[string]$Title='确认操作')
@@ -113,6 +147,7 @@ function Confirm-PCAction {
 function Show-PCResult {
     param($Result)
     $pc.ui.ModeBadge.Text=if($pc.admin){'管理员窗口'}else{'本机检查'}
+    if(Continue-PCDisconnect $Result){return}
     switch($Result.status){
         'inspected'{
             $pc.inspection=$Result;$pc.clients=@($Result.clients);$pc.pending=$Result.plan;$pc.direct=$Result.plan.mode -eq 'manual-user-direct'
@@ -138,31 +173,26 @@ function Show-PCResult {
             }elseif($Result.connectivity.status -eq 'http_reachable'){
                 $title=if($v.tone -eq 'warning'){'测试网页可连接，部分设置未确认'}else{'没有发现代理故障，测试网页可连接'}
                 Set-PCScreen $title '没有修改网络设置。个别网站或应用仍有问题时，不需要反复清理代理。'
-            }else{Set-PCScreen '没有找到可自动修复的代理问题' '测试网页也未能确认连通。请检查 Wi-Fi 或网线，以及代理客户端是否可用；本次没有重启网卡或修改无关设置。' -Tone warning}
+            }else{Set-PCScreen '没有找到可自动修复的代理问题' (Get-PCConnectivityFailureMessage $Result.connectivity) -Tone warning}
         }
         'choose_client'{
             $pc.ui.DisconnectClients.ItemsSource=@($Result.clients);$pc.ui.DisconnectClients.SelectedIndex=-1
-            Set-PCScreen '当前运行了多个代理' '请选择要关闭的客户端。其他客户端和它们的设置会保留。' '继续' 'ChooseClient' 'warning'
+            Set-PCScreen '当前运行了多个代理' '请选择要关闭的客户端，其他客户端会保留。关闭会自动处理退出与残留。' '关闭所选代理' 'ChooseClient' 'warning'
             $pc.ui.ClientPickerPanel.Visibility='Visible'
         }
         'client_needs_admin'{
-            $pc.clientKey=$Result.key;$pc.resumeAction='Disconnect'
-            Set-PCScreen ('关闭'+$Result.label+'需要授权') '这个客户端使用了受保护的进程或辅助服务。授权后先显示关闭范围，再由你确认，不会直接断开连接。' '授权后继续' 'Elevate' 'warning'
+            $pc.clientKey=$Result.key;$pc.clientInstance=$Result.instance;$pc.resumeAction='Disconnect'
+            Set-PCScreen ('关闭'+$Result.label+'需要授权') '点击后请求 Windows 授权；核验同一客户端后自动完成关闭，不再重复确认。' '授权并关闭' 'Elevate' 'warning'
         }
         'client_preview'{
             $pc.pending=$Result.plan;$pc.clientKey=$Result.plan.key
-            $force=[bool]$pc.forcePreview;$pc.forcePreview=$false
             $label=$Result.plan.label
-            $message=if($force){'正常退出未完成。将强制结束这个客户端的剩余进程，相关连接会中断；不会关闭其他代理。设置可恢复，已退出的程序需要重新打开。'}else{'将请求这个客户端及其辅助服务正常退出，确认退出后清理它留下的代理设置。相关连接会中断；不会关闭其他代理，也不会重启网卡。'}
-            $button=if($force){'确认强制关闭'+$label}else{'确认关闭'+$label}
-            $intent=if($force){'DisconnectForce'}else{'Disconnect'}
-            Set-PCScreen ('关闭'+$label+'，恢复普通上网') $message $button $intent 'warning' @($Result.actions)
+            Set-PCScreen ('关闭'+$label+'，恢复普通上网') '点击关闭后先请求正常退出，超时自动处理已核验的残留进程，并恢复下次启动所需的辅助服务。不会关闭其他代理或重启网卡。' ('关闭'+$label) 'Disconnect' 'warning' @($Result.actions)
             $pc.copy=$Result.public|ConvertTo-Json -Depth 8
         }
         'client_still_running'{
-            $pc.clientKey=$Result.key;$pc.closeContext=$Result.previous_plan
-            if($Result.force_attempted){Set-PCScreen ($Result.label+'仍未完全退出') '客户端可能自动重启，或端口已被其他程序占用。没有清理仍在使用的设置，请从客户端的托盘菜单退出后再检查。' -Tone warning}
-            else{Set-PCScreen ($Result.label+'没有完全退出') '正常退出未完成，尚未清理代理设置。下一步可以查看强制关闭范围，或返回首页。' '继续关闭…' 'ForcePreview' 'warning'}
+            $pc.clientKey=$Result.key
+            Set-PCScreen ($Result.label+'仍未完全退出') '已完成本次自动退出尝试，但客户端可能重新启动，或端口被其他程序占用。没有继续清理仍在使用的设置；已保留客户端下次启动所需的辅助服务。' -Tone warning
         }
         'client_settings_incomplete'{
             $label=$Result.label
@@ -171,7 +201,7 @@ function Show-PCResult {
         }
         'client_closed'{
             $remaining=@($Result.remaining)
-            $message=if($remaining.Count){($remaining -join '；')+'。已保留这些设置，尚不能确认已恢复普通上网。'}elseif($Result.connectivity.status -eq 'http_reachable'){'客户端已退出，相关代理引用已清理，基础网页测试通过。已打开的应用可能需要重新打开。'}else{'客户端已退出，相关代理引用已处理，但基础网页测试尚未通过。请检查 Wi-Fi 或网线连接。'}
+            $message=if($remaining.Count){($remaining -join '；')+'。已保留这些设置，尚不能确认已恢复普通上网。'}elseif($Result.connectivity.status -eq 'http_reachable'){'客户端已退出，相关代理引用已清理，基础网页测试通过。已打开的应用可能需要重新打开。'}else{'客户端已退出，相关代理引用已处理。'+(Get-PCConnectivityFailureMessage $Result.connectivity)}
             Set-PCScreen ('已关闭'+$Result.label) $message -Tone $(if($remaining.Count -or $Result.connectivity.status -ne 'http_reachable'){'warning'}else{'good'})
             if($Result.settings.status -eq 'applied'){$pc.ui.UndoButton.Visibility='Visible'}
         }
@@ -192,7 +222,7 @@ function Show-PCResult {
         }
         'applied'{
             $count=Get-PCValue $Result.configuration 'changed' 0
-            $message=if($Result.connectivity.status -eq 'http_reachable'){'设置已核验，基础网页测试通过。已打开的应用可能需要重新打开。'}else{'设置已修复，但基础网页测试尚未通过。不要重复清理同一设置，请检查 Wi-Fi、网线或代理客户端。'}
+            $message=if($Result.connectivity.status -eq 'http_reachable'){'设置已核验，基础网页测试通过。已打开的应用可能需要重新打开。'}else{'设置已修复。'+(Get-PCConnectivityFailureMessage $Result.connectivity)}
             if($Result.notification -and -not $Result.notification.wininet_notified){$message+=' Windows 通知未确认送达，但设置已经保存。'}
             Set-PCScreen ("已修复 $count 项设置") $message
             $pc.ui.UndoButton.Visibility='Visible'
@@ -203,7 +233,8 @@ function Show-PCResult {
         'recovery_required'{Set-PCScreen '部分设置还需要恢复' '没有覆盖其他程序后续修改的设置。请查看详情，并尝试恢复上次修改。' '恢复上次修改' 'Undo' 'error';$pc.ui.UndoButton.Visibility='Collapsed'}
         'recovered'{Set-PCScreen '已恢复上次修改的设置' '只恢复了仍属于上次操作的设置。没有重启已结束的进程，也不代表网络一定恢复。';$pc.ui.UndoButton.Visibility='Collapsed'}
         'nothing_to_undo'{Set-PCScreen '没有可恢复的修改' '尚无修改记录，或上次修改已经恢复。';$pc.ui.UndoButton.Visibility='Collapsed'}
-        'http_reachable'{Set-PCScreen '测试网页可以连接' '微软测试网页已成功响应。其他网站和应用可能不同；这项测试也不证明流量绕过了代理隧道。'}
+        'http_reachable'{Set-PCScreen '测试网页可以连接' '基础测试网页已成功响应。其他网站和应用可能不同；这项测试也不证明流量绕过了代理隧道。'}
+        'dns_resolution_failed'{Set-PCScreen '域名解析失败' (Get-PCConnectivityFailureMessage $Result) -Tone warning}
         'http_not_confirmed'{Set-PCScreen '测试网页暂时未能连接' '不能据此认定所有网络都中断。先重新检查代理；不要反复清理同一项设置。' -Tone warning}
         'not_available'{Set-PCScreen '当前无法执行网页测试' '没有找到系统网页测试工具。代理检查结果仍可使用。' -Tone warning}
         'closed'{Set-PCScreen '所选程序已结束，端口已关闭' '已经核对端口关闭，并处理了相关代理引用。恢复设置不会重新启动这些程序。';if($Result.operation.settings.status -eq 'applied'){$pc.ui.UndoButton.Visibility='Visible'}}
@@ -245,15 +276,14 @@ function Show-PCResult {
 }
 function Invoke-PCPrimary {
     switch($pc.intent){
-        'Home'{$pc.forcePreview=$false;Start-PCWork Inspect}
+        'Home'{$pc.disconnectRequested=$false;Start-PCWork Inspect}
         'ChooseClient'{
             $selected=$pc.ui.DisconnectClients.SelectedItem
             if(-not $selected){$pc.ui.Explanation.Text='请先选择要关闭的客户端。其他客户端会保留。';return}
-            $pc.clientKey=$selected.key;Start-PCWork DisconnectPreview @{ClientKey=$pc.clientKey}
+            Start-PCDisconnect -SelectedClient $selected.key
         }
-        'ForcePreview'{$pc.forcePreview=$true;Start-PCWork DisconnectPreview @{ClientKey=$pc.clientKey;Plan=$pc.closeContext}}
         {$_ -in @('Disconnect','DisconnectForce')}{
-            if(-not $pc.pending){Start-PCWork DisconnectPreview @{ClientKey=$pc.clientKey};return}
+            if(-not $pc.pending){Start-PCDisconnect -SelectedClient $pc.clientKey;return}
             Start-PCWork $pc.intent @{Plan=$pc.pending}
         }
         'Repair'{
@@ -267,7 +297,7 @@ function Invoke-PCPrimary {
             if(-not $pc.admin -and @($undo.resources|Where-Object{$_ -like 'Route:*'}).Count){Request-PCElevation 'Undo';return}
             if(Confirm-PCAction '只恢复上次修改中仍未被其他程序改动的设置。不会重启已经结束的程序。继续？' '恢复上次修改'){Start-PCWork Undo}
         }
-        'Elevate'{Request-PCElevation $(if($pc.resumeAction){$pc.resumeAction}else{'Control'})}
+        'Elevate'{if($pc.resumeAction -eq 'Disconnect'){$pc.disconnectRequested=$true};Request-PCElevation $(if($pc.resumeAction){$pc.resumeAction}else{'Control'})}
         {$_ -in @('WifiSoft','WifiReset','IPv6Enable','IPv6Disable')}{
             $labels=@{WifiSoft='刷新连接';WifiReset='重启网卡';IPv6Enable='启用 IPv6';IPv6Disable='禁用 IPv6'}
             Invoke-PCAdapterAction $pc.intent $labels[$pc.intent]
@@ -295,7 +325,7 @@ function Show-PCInitialAction {
     param([string]$Action)
     if($pc.inspection.view.blocked){return}
     switch($Action){
-        'Disconnect'{Start-PCWork DisconnectPreview @{ClientKey=$pc.clientKey}}
+        'Disconnect'{Start-PCWork DisconnectPreview @{ClientKey=$pc.clientKey;ExpectedClientInstance=$pc.clientInstance}}
         'Clean'{Start-PCWork Diagnose}
         'StopPort'{if($Port){Start-PCWork StopPreview @{Port=$Port;ExpectedClient=$pc.legacyClient}}}
         'IPv6Status'{Start-PCWork IPv6Status}
@@ -320,6 +350,7 @@ try{
     Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
     if($AsJson){ConvertTo-PCPublicSnapshot (Get-PCSnapshot)|ConvertTo-Json -Depth 12;return}
     $pc.admin=Test-PCAdministrator
+    if($ResumeDisconnect -and ($InitialAction -ne 'Disconnect' -or -not $ClientKey -or -not $ExpectedSid -or $ExpectedClientInstance -cnotmatch '^[a-f0-9]{64}$' -or -not $pc.admin)){throw 'Invalid client disconnect continuation.'}
     $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if($ExpectedSid -and $ExpectedSid -ne $sid){throw '启动账户发生变化。请用原 Windows 账户授权，避免修改其他用户的代理设置。'}
     $reader=[Xml.XmlReader]::Create((Join-Path $PSScriptRoot 'ControlCenter.xaml'))
@@ -336,8 +367,8 @@ try{
     $window.Height=[Math]::Min($window.Height,[Windows.SystemParameters]::WorkArea.Height-40)
     if($Port){$pc.ui.PortInput.Text=[string]$Port}
     $pc.ui.Primary.Add_Click({Invoke-PCPrimary})
-    $pc.ui.HomeButton.Add_Click({$pc.forcePreview=$false;Start-PCWork Inspect})
-    $pc.ui.DisconnectButton.Add_Click({$pc.clientKey=$null;$pc.closeContext=$null;$pc.forcePreview=$false;Start-PCWork DisconnectPreview})
+    $pc.ui.HomeButton.Add_Click({$pc.disconnectRequested=$false;Start-PCWork Inspect})
+    $pc.ui.DisconnectButton.Add_Click({Start-PCDisconnect})
     $pc.ui.MaintenanceButton.Add_Click({Open-PCMaintenance})
     $pc.ui.ViewDetailsButton.Add_Click({$detailsWindow.Owner=$window;[void]$detailsWindow.ShowDialog()})
     $pc.ui.UndoButton.Add_Click({$pc.intent='Undo';Invoke-PCPrimary})

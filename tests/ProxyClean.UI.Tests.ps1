@@ -133,3 +133,74 @@ Describe 'Guided GUI handoff keeps user intent without executing it' {
         $result.side_effects|Should -BeFalse
     }
 }
+
+Describe 'One-click close executes real GUI handlers against isolated worker mocks' {
+    BeforeAll {
+        $tokens=$null;$errors=$null
+        $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $script:root 'ControlCenter.ps1'),[ref]$tokens,[ref]$errors)
+        foreach($name in @('Start-PCDisconnect','Continue-PCDisconnect')){
+            $f=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$false)
+            . ([scriptblock]::Create($f.Extent.Text))
+        }
+    }
+    BeforeEach {
+        $script:pc=@{job=$null;pending='stale';clientKey=$null;clientInstance=$null;disconnectRequested=$false;elevationAttempted=$false;admin=$false;legacyClient='Any';resumeAction=$null;
+            ui=@{PortInput=[pscustomobject]@{Text=''};AdapterCombo=[pscustomobject]@{SelectedItem=$null}}}
+        Mock Start-PCWork {}
+        Mock Request-PCElevation {}
+        Mock Set-PCScreen {}
+        Mock Confirm-PCAction {throw 'No second in-app confirmation belongs in a close request'}
+    }
+    It 'a single click records close intent and queues a read-only preview' {
+        Start-PCDisconnect
+        $script:pc.disconnectRequested|Should -BeTrue
+        $script:pc.pending|Should -BeNullOrEmpty
+        Should -Invoke Start-PCWork -Times 1 -ParameterFilter {$Action -eq 'DisconnectPreview'}
+        Should -Invoke Confirm-PCAction -Times 0
+    }
+    It 'continues a verified preview without another user action' {
+        Start-PCDisconnect -SelectedClient clash-verge
+        Continue-PCDisconnect ([pscustomobject]@{status='client_preview';plan=[pscustomobject]@{key='clash-verge'}})|Should -BeTrue
+        Should -Invoke Start-PCWork -Times 1 -ParameterFilter {$Action -eq 'Disconnect' -and $Options.Plan.key -eq 'clash-verge'}
+        $script:pc.disconnectRequested|Should -BeFalse
+    }
+    It 'ignores a second click while work is running' {
+        $script:pc.job=@{action='Disconnect'}
+        Start-PCDisconnect
+        Should -Invoke Start-PCWork -Times 0
+    }
+    It 'does not apply a preview opened without explicit close intent' {
+        Continue-PCDisconnect ([pscustomobject]@{status='client_preview';plan=[pscustomobject]@{key='clash-verge'}})|Should -BeFalse
+        Should -Invoke Start-PCWork -Times 0
+    }
+    It 'binds UAC continuation to the original client and process instance' {
+        Start-PCDisconnect -SelectedClient clash-verge
+        Continue-PCDisconnect ([pscustomobject]@{status='client_needs_admin';key='clash-verge';instance=('a'*64)})|Should -BeTrue
+        $o=Get-PCElevationOptions Disconnect
+        $o.ResumeDisconnect|Should -BeTrue;$o.ExpectedClientInstance|Should -Be ('a'*64);$o.ClientKey|Should -Be clash-verge
+        Should -Invoke Request-PCElevation -Times 1 -ParameterFilter {$Action -eq 'Disconnect'}
+        $launch=(& (Join-Path $script:root 'Launch-ProxyClean.ps1') @o -PreviewLaunch)|ConvertFrom-Json
+        $launch.arguments|Should -Contain '-ResumeDisconnect';$launch.preview_first|Should -BeFalse;$launch.side_effects|Should -BeFalse
+    }
+    It 'stops instead of looping when authorization remains insufficient' {
+        $script:pc.disconnectRequested=$true;$script:pc.elevationAttempted=$true
+        Continue-PCDisconnect ([pscustomobject]@{status='client_needs_admin'})|Should -BeTrue
+        Should -Invoke Request-PCElevation -Times 0
+        Should -Invoke Start-PCWork -Times 0
+        $script:pc.disconnectRequested|Should -BeFalse
+    }
+    It 'does not close all clients when a choice is required' {
+        $script:pc.disconnectRequested=$true
+        Continue-PCDisconnect ([pscustomobject]@{status='choose_client'})|Should -BeFalse
+        Should -Invoke Start-PCWork -Times 0
+    }
+    It 'clears retained intent when discovery fails' {
+        $script:pc.disconnectRequested=$true
+        Continue-PCDisconnect ([pscustomobject]@{status='failed'})|Should -BeFalse
+        $script:pc.disconnectRequested|Should -BeFalse
+        Should -Invoke Start-PCWork -Times 0
+    }
+    It 'rejects an incomplete UAC-resume command before any launch' {
+        {& (Join-Path $script:root 'Launch-ProxyClean.ps1') -InitialAction Disconnect -ResumeDisconnect -Elevated -PreviewLaunch}|Should -Throw '*Invalid client disconnect continuation*'
+    }
+}

@@ -278,6 +278,7 @@ function ConvertTo-PCPublicSnapshot {
 }
 . (Join-Path $PSScriptRoot 'ProxyClean.Operations.ps1')
 . (Join-Path $PSScriptRoot 'ProxyClean.Network.ps1')
+. (Join-Path $PSScriptRoot 'ProxyClean.ClientPolicy.ps1')
 . (Join-Path $PSScriptRoot 'ProxyClean.Clients.ps1')
 . (Join-Path $PSScriptRoot 'ProxyClean.Workflow.ps1')
 Export-ModuleMember -Function '*-PC*','Get-ProxyEndpoints','Get-LocalProxyPorts','Test-LocalProxyDead'

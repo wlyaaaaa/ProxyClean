@@ -210,7 +210,7 @@ Describe 'Client previews preserve intent without executing shutdown' {
         InModuleScope ProxyClean.Common -Parameters @{Snapshot=$s} {
             param($Snapshot)
             $script:previewSnapshot=$Snapshot
-            $script:previewGroup=[pscustomobject]@{key='clash-verge';label='Clash Verge';requires_admin=$false;published=$true;ports=@(34562);members=@([pscustomobject]@{ProcessId=991231;Name='clash-verge.exe';SessionId=1;ExecutablePath='C:\Fixture\clash-verge.exe'})}
+            $script:previewGroup=[pscustomobject]@{key='clash-verge';label='Clash Verge';requires_admin=$false;published=$true;ports=@(34562);members=@([pscustomobject]@{ProcessId=991231;Name='clash-verge.exe';SessionId=1;CreationDate=[DateTime]'2026-01-01T00:00:00Z';ExecutablePath='C:\Fixture\clash-verge.exe'})}
             Mock Get-PCSnapshot {$script:previewSnapshot}
             Mock Get-PCClientInventory {@($script:previewGroup)}
             Mock Get-PCUndoSummary {[pscustomobject]@{phase='none';available=$false}}

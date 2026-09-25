@@ -26,7 +26,7 @@
     <ItemsControl x:Name="ActionItems" Margin="0,0,0,8"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="#2A6541" Margin="0,0,0,8"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
     <StackPanel x:Name="ClientPickerPanel" Visibility="Collapsed" Margin="0,0,0,12"><TextBlock Text="要关闭哪个代理？其他代理会保留。" Margin="0,0,0,8"/><ComboBox x:Name="DisconnectClients" DisplayMemberPath="label" MinWidth="240" HorizontalAlignment="Left"/></StackPanel>
     <Button x:Name="Primary" Content="正在检查…" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" MinWidth="280" IsEnabled="False"/>
-    <Button x:Name="DisconnectButton" Content="关闭代理，恢复普通上网" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" Padding="0,8" Margin="0,2,0,0" Visibility="Collapsed"/>
+    <Button x:Name="DisconnectButton" Content="关闭代理，恢复普通上网" ToolTip="一次点击：正常退出，超时自动处理残留，保留辅助服务的再次启动能力。必要时仅需 Windows 授权。" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" Padding="0,8" Margin="0,2,0,0" Visibility="Collapsed"/>
     <WrapPanel><Button x:Name="UndoButton" Content="恢复上次修改" Background="Transparent" BorderThickness="0" Padding="0,6" Visibility="Collapsed"/><Button x:Name="CancelButton" Content="取消检查" Background="Transparent" BorderThickness="0" Padding="0,6" Visibility="Collapsed"/></WrapPanel>
     <ProgressBar x:Name="Progress" Height="4" Foreground="#249D5B" Background="#DCEEE2" IsIndeterminate="True" Visibility="Collapsed" Margin="0,12,0,10"/>
     <TextBlock x:Name="CurrentStage" Text="正在准备检查…" FontSize="12" Foreground="#607B6B" TextWrapping="Wrap" Margin="0,8,0,0"/>

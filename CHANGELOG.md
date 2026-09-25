@@ -1,5 +1,13 @@
 # Changes
 
+## 2026-09-25: one-click close, restartability and honest DNS diagnostics
+
+- Treat one client-close click as normal exit plus bounded automatic cleanup of the same verified residual processes. Keep necessary Windows UAC, bind continuation to the same user and process instance, and remove repeated application confirmations.
+- Restore previously running recognized launch brokers even when close or settings cleanup fails. Keep standalone proxy-core services stopped, preserve service startup settings, bound service-start waits and refuse success if recovery fails or a core restarts.
+- Handle natural process exit races without retry prompts. Close controllers before cores and brokers; do not chase replacement processes or reused ports.
+- Refresh only the DNS cache after verified client exit. Distinguish repeated DNS-resolution failures from mixed network errors, use bounded two-site HTTP probes, and show actionable DNS guidance without silently changing resolver configuration.
+- All 277 repository tests pass in PowerShell 7.6.4 and Windows PowerShell 5.1; both WPF hosts construct without showing a window. Extend service, process, DNS and actual GUI-handler regressions, update the complete-package launcher, and document that live client shutdown/reopen was deliberately not exercised.
+
 ## 2026-09-24: fix disconnect preview with no active system-proxy endpoints
 
 - Keep absent endpoint lists as empty collections, not null pipeline entries, across client previews, home inspection and public snapshot conversion. Optional discovery inputs tolerate null elements without treating them as dead endpoints or weakening required endpoint validation.

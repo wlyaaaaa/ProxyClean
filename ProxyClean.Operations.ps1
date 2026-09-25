@@ -308,13 +308,20 @@ namespace ProxyClean { public static class Notifications {
 function Test-PCConnectivity {
     $curl=Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1
     if(-not $curl){return [pscustomobject]@{status='not_available';scope='HTTP only';direct_route_proven=$false}}
-    try{
-        $r=Invoke-PCNative -FilePath $curl.Source -ArgumentList @('--noproxy','*','-4','--silent','--show-error','--output','NUL','--write-out','%{http_code}','--connect-timeout','5','--max-time','10','https://www.msftconnecttest.com/connecttest.txt') -TimeoutSeconds 13
-        $ok=$r.stdout.Trim() -match '^2\d\d$'
-        [pscustomobject]@{status=if($ok){'http_reachable'}else{'http_not_confirmed'};scope='IPv4 HTTP bypassing explicit proxies; TUN/IP routing can still apply';direct_route_proven=$false}
-    }catch{[pscustomobject]@{status='http_not_confirmed';scope='IPv4 HTTP probe';direct_route_proven=$false}}
+    $probes=New-Object 'Collections.Generic.List[object]'
+    foreach($url in @('https://www.baidu.com/','https://www.msftconnecttest.com/connecttest.txt')){
+        try{
+            $r=Invoke-PCNative -FilePath $curl.Source -ArgumentList @('--noproxy','*','-4','--silent','--show-error','--output','NUL','--write-out','%{http_code}','--connect-timeout','3','--max-time','6',$url) -AllowedExitCodes @(0,5,6,7,28,35,52,56,60) -TimeoutSeconds 8
+            $code=[int](Get-PCValue $r 'exit_code' 0);$http=$r.stdout.Trim()
+            $probes.Add([pscustomobject]@{exit_code=$code;http_code=$http})
+            if($code -eq 0 -and $http -match '^2\d\d$'){
+                return [pscustomobject]@{status='http_reachable';scope='HTTP bypassing explicit proxies; TUN/IP routing can still apply';direct_route_proven=$false;probes=$probes.ToArray()}
+            }
+        }catch{$probes.Add([pscustomobject]@{exit_code=-1;http_code=''})}
+    }
+    $dnsFailure=$probes.Count -gt 0 -and @($probes|Where-Object exit_code -ne 6).Count -eq 0
+    [pscustomobject]@{status=if($dnsFailure){'dns_resolution_failed'}else{'http_not_confirmed'};scope='IPv4 HTTP probes; no network settings changed';direct_route_proven=$false;probes=$probes.ToArray();dns=if($dnsFailure){Get-PCDnsDependency}else{$null}}
 }
-
 function Get-PCGitWriteTarget {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Key)

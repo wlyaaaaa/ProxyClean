@@ -41,7 +41,9 @@ function ConvertTo-PCFriendlyError {
     $message=if($ErrorRecord -is [string]){$ErrorRecord}else{[string]$ErrorRecord.Exception.Message}
     switch -Regex ($message){
         'PC_CANCELLED|OperationCanceled'{return '检查已取消，没有修改网络设置。'}
-        'Service identity changed|Process identity changed'{return '所选程序或服务已变化，本次没有继续操作。请重新检查后再确认。'}
+        'PC_CLIENT_SERVICE_RESTORE_FAILED'{return '客户端退出后，启动辅助服务未能恢复；不能确认下次可以启动。请在客户端设置中修复服务，不要反复清理网络。'}
+        'PC_CLIENT_RESTARTED'{return '辅助服务恢复后，客户端又启动了核心。本次不能确认为已关闭；没有继续追杀新进程或重置网络。'}
+        'Service identity changed|Process identity changed|Process identity unavailable'{return '所选程序或服务已变化，本次没有继续操作。请重新检查后再确认。'}
         'PC_PROXY_SERVER_CHANGED|Configuration changed|Git proxy changed|Route changed|identity changed'{return '设置在检查后发生了变化。本次已停止，请重新检查后再操作。'}
         'PC_PROXY_RESTARTED|adapter recovered'{return '代理或网卡已经恢复运行，本次不再清理。请重新检查。'}
         'PC_LEGACY_CLIENT_CHANGED'{return '旧快捷方式的端口已属于其他程序，未选择任何结束操作。请重新选择实际程序。'}
@@ -114,7 +116,7 @@ function Format-PCInspection {
 function Invoke-PCWorkflow {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Medium')]
     param([ValidateSet('Inspect','Diagnose','DisconnectPreview','Disconnect','DisconnectForce','Repair','Undo','Connectivity','StopPreview','Stop','WifiSoft','WifiReset','IPv6Status','IPv6Enable','IPv6Disable','ExitProbe','FlushDns')][string]$Action='Inspect',
-        $Plan,[string]$ClientKey,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any',
+        $Plan,[string]$ClientKey,[string]$ExpectedClientInstance,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any',
         [switch]$SkipConnectivityChecks,[scriptblock]$Progress)
     try{
         if($Action -in @('Disconnect','DisconnectForce','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
@@ -132,10 +134,10 @@ function Invoke-PCWorkflow {
                 }
                 return [pscustomobject]@{status='diagnosed';inspection=$inspection;connectivity=$probe}
             }
-            'DisconnectPreview'{return Get-PCClientClosePreview -ClientKey $ClientKey -PreviousPlan $Plan -Progress $Progress}
+            'DisconnectPreview'{return Get-PCClientClosePreview -ClientKey $ClientKey -PreviousPlan $Plan -ExpectedClientInstance $ExpectedClientInstance -Progress $Progress}
             {$_ -in @('Disconnect','DisconnectForce')}{
                 if(-not $Plan){throw 'Please preview the client first.'}
-                return Invoke-PCClientClose -Plan $Plan -Force:($Action -eq 'DisconnectForce') -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
+                return Invoke-PCClientClose -Plan $Plan -Force:($Action -eq 'DisconnectForce') -ForceFallback:($Action -eq 'Disconnect') -SkipConnectivityChecks:$SkipConnectivityChecks -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
             }
             'Inspect'{
                 $snapshot=Get-PCSnapshot -Progress $Progress
