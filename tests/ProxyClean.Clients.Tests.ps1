@@ -31,6 +31,30 @@ Describe 'Client selection is independent of a hard-coded port' {
         $r=@(Get-PCClientInventory -Processes $rows)
         $r.Count|Should -Be 1;$r[0].label|Should -Be 'Clash Verge';$r[0].members.Count|Should -Be 2
     }
+    It 'rejects a reused grandparent PID even when that controller predates the core' {
+        $controller=New-ClientNode 10001 clash-verge
+        $middle=New-ClientNode 10002 powershell -Parent 10001
+        $core=New-ClientNode 10003 xray -Parent 10002
+        $controller|Add-Member -NotePropertyName CreationDate -NotePropertyValue ([DateTime]'2026-09-30T00:02:00Z')
+        $middle|Add-Member -NotePropertyName CreationDate -NotePropertyValue ([DateTime]'2026-09-30T00:01:00Z')
+        $core|Add-Member -NotePropertyName CreationDate -NotePropertyValue ([DateTime]'2026-09-30T00:03:00Z')
+        $r=@(Get-PCClientInventory -Processes @($controller,$middle,$core))
+        $r.Count|Should -Be 2
+        @($r|Where-Object key -eq clash-verge)[0].members.ProcessId|Should -Not -Contain 10003
+        @($r|Where-Object family_key -eq xray)[0].members.ProcessId|Should -Contain 10003
+    }
+    It 'keeps a valid three-level controller chain grouped' {
+        $controller=New-ClientNode 10001 clash-verge
+        $middle=New-ClientNode 10002 powershell -Parent 10001
+        $core=New-ClientNode 10003 xray -Parent 10002
+        $controller|Add-Member -NotePropertyName CreationDate -NotePropertyValue ([DateTime]'2026-09-30T00:01:00Z')
+        $middle|Add-Member -NotePropertyName CreationDate -NotePropertyValue ([DateTime]'2026-09-30T00:02:00Z')
+        $core|Add-Member -NotePropertyName CreationDate -NotePropertyValue ([DateTime]'2026-09-30T00:03:00Z')
+        $r=@(Get-PCClientInventory -Processes @($controller,$middle,$core))
+        $r.Count|Should -Be 1
+        $r[0].key|Should -Be clash-verge
+        $r[0].members.ProcessId|Should -Contain 10003
+    }
     It 'does not treat a helper control port as a proxy endpoint that must disappear' {
         $rows=@((New-ClientNode 10001 FlyingBird),(New-ClientNode 10002 FlyingBirdHelperService -Session 0),(New-ClientNode 10003 FlyingBirdCore -Parent 10002 -Session 0))
         $listeners=@([pscustomobject]@{OwningProcess=10002;LocalAddress='127.0.0.1';LocalPort=49890},[pscustomobject]@{OwningProcess=10003;LocalAddress='127.0.0.1';LocalPort=34567})

@@ -29,9 +29,10 @@ function Get-PCClientInventory {
         # merely because a similarly named GUI happens to be running.
         $parentId=[int]$p.ParentProcessId;$visited=@();$coreRoot=$p
         $managed=(Test-PCClientController $p.Name) -or (Test-PCClientBroker $p.Name)
+        $childBorn=Get-PCValue $p 'CreationDate'
         while($all.ContainsKey($parentId) -and $parentId -notin $visited){
             $visited+=@($parentId);$parent=$all[$parentId]
-            $childBorn=Get-PCValue $p 'CreationDate';$parentBorn=Get-PCValue $parent 'CreationDate'
+            $parentBorn=Get-PCValue $parent 'CreationDate'
             if($childBorn -and $parentBorn -and [DateTime]$parentBorn -gt [DateTime]$childBorn){break}
             if([int]$parent.SessionId -notin @(0,$session)){break}
             $owner=Get-PCClientFamily $parent.Name
@@ -40,6 +41,7 @@ function Get-PCClientInventory {
                 if((Test-PCClientController $parent.Name) -or (Test-PCClientBroker $parent.Name)){$managed=$true;break}
             }
             if($owner -and $owner.key -ceq $family.key){$coreRoot=$parent}
+            $childBorn=$parentBorn
             $parentId=[int]$parent.ParentProcessId
         }
         $groupKey=$family.key
