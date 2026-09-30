@@ -138,14 +138,17 @@ Describe 'One-click close executes real GUI handlers against isolated worker moc
     BeforeAll {
         $tokens=$null;$errors=$null
         $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $script:root 'ControlCenter.ps1'),[ref]$tokens,[ref]$errors)
-        foreach($name in @('Start-PCDisconnect','Continue-PCDisconnect')){
+        foreach($name in @('Start-PCDisconnect','Continue-PCDisconnect','Show-PCResult')){
             $f=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$false)
             . ([scriptblock]::Create($f.Extent.Text))
         }
+        function Add-PCLog {}
     }
     BeforeEach {
         $script:pc=@{job=$null;pending='stale';clientKey=$null;clientInstance=$null;disconnectRequested=$false;elevationAttempted=$false;admin=$false;legacyClient='Any';resumeAction=$null;
-            ui=@{PortInput=[pscustomobject]@{Text=''};AdapterCombo=[pscustomobject]@{SelectedItem=$null}}}
+            home=$false;copy=$null;ui=@{PortInput=[pscustomobject]@{Text=''};AdapterCombo=[pscustomobject]@{SelectedItem=$null};ModeBadge=[pscustomobject]@{Text=''};
+                DisconnectClients=[pscustomobject]@{ItemsSource=@();SelectedIndex=0;SelectedItem=$null};ClientPickerPanel=[pscustomobject]@{Visibility='Collapsed'};
+                CopyButton=[pscustomobject]@{IsEnabled=$false};DetailsText=[pscustomobject]@{Text=''};Headline=[pscustomobject]@{Text=''};Explanation=[pscustomobject]@{Text=''}}}
         Mock Start-PCWork {}
         Mock Request-PCElevation {}
         Mock Set-PCScreen {}
@@ -193,6 +196,27 @@ Describe 'One-click close executes real GUI handlers against isolated worker moc
         $script:pc.disconnectRequested=$true
         Continue-PCDisconnect ([pscustomobject]@{status='choose_client'})|Should -BeFalse
         Should -Invoke Start-PCWork -Times 0
+    }
+    It 'shows the real client chooser without selecting or closing either client' {
+        $script:pc.disconnectRequested=$true
+        Mock Set-PCScreen {param($Title,$Message,$Primary,$Intent)$script:pc.intent=$Intent}
+        $choices=@([pscustomobject]@{key='clash-verge';label='Clash Verge'},[pscustomobject]@{key='flyingbird';label='飞鸟'})
+        Show-PCResult ([pscustomobject]@{status='choose_client';clients=$choices})
+        $script:pc.intent|Should -Be ChooseClient
+        $script:pc.ui.ClientPickerPanel.Visibility|Should -Be Visible
+        $script:pc.ui.DisconnectClients.ItemsSource.Count|Should -Be 2
+        $script:pc.ui.DisconnectClients.SelectedIndex|Should -Be -1
+        Invoke-PCPrimary
+        Should -Invoke Start-PCWork -Times 0
+        $script:pc.ui.DisconnectClients.SelectedItem=$choices[1]
+        Invoke-PCPrimary
+        Should -Invoke Start-PCWork -Times 1 -ParameterFilter {$Action -eq 'DisconnectPreview' -and $Options.ClientKey -eq 'flyingbird'}
+    }
+    It 'starts a new home close with a fresh choice after a previous selection' {
+        $script:pc.clientKey='clash-verge'
+        Start-PCDisconnect
+        $script:pc.clientKey|Should -BeNullOrEmpty
+        Should -Invoke Start-PCWork -Times 1 -ParameterFilter {$Action -eq 'DisconnectPreview' -and -not $Options.ClientKey}
     }
     It 'clears retained intent when discovery fails' {
         $script:pc.disconnectRequested=$true

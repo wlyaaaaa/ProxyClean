@@ -10,7 +10,7 @@ function Test-PCClientController {
 }
 function Get-PCClashVergeIntentStep {
     param([Parameter(Mandatory)]$Plan)
-    if($Plan.key -ne 'clash-verge'){return}
+    if((Get-PCValue $Plan 'family_key' $Plan.key) -ne 'clash-verge'){return}
     $services=@($Plan.services|Where-Object name -ceq 'clash_verge_service')
     if(-not $services.Count){return}
     if($services.Count -ne 1){throw 'Service identity changed.'}
@@ -77,11 +77,26 @@ function Assert-PCClientStayedClosed {
     do{
         $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)
         $inventory=@(Get-PCClientInventory -Listeners $listeners)
-        if(@($inventory|Where-Object key -ceq $Plan.key).Count){throw 'PC_CLIENT_RESTARTED'}
+        if(Test-PCSelectedClientPresent -Plan $Plan -Inventory $inventory){throw 'PC_CLIENT_RESTARTED'}
         if(@((Get-PCClientPortState -Plan $Plan -Inventory $inventory).unknown).Count){throw 'PC_CLIENT_PORT_OCCUPIED'}
         if($timer.ElapsedMilliseconds -ge $Milliseconds){return}
         Start-Sleep -Milliseconds 200
     }while($true)
+}
+function Test-PCSelectedClientPresent {
+    param([Parameter(Mandatory)]$Plan,[AllowEmptyCollection()][object[]]$Inventory=@())
+    $family=Get-PCValue $Plan 'family_key' $Plan.key
+    $knownOthers=@(Get-PCValue $Plan 'other_instances' @())
+    $paths=@((Get-PCValue $Plan 'members' @())|ForEach-Object {Get-PCValue $_ 'path'}|Where-Object {$_})
+    foreach($client in $Inventory){
+        if($client.key -ceq $Plan.key){return $true}
+        if($client.key -in $knownOthers){continue}
+        if((Get-PCValue $client 'family_key' $client.key) -cne $family){continue}
+        # A replacement core has a new instance key. Report it, never terminate
+        # it. Already observed independent instances are explicitly excluded.
+        if(@((Get-PCValue $client 'members' @())|Where-Object {(Get-PCValue $_ 'ExecutablePath') -in $paths}).Count){return $true}
+    }
+    return $false
 }
 function Get-PCDisconnectTransition {
     param([string]$Status,[bool]$Requested,[bool]$Administrator,[bool]$ElevationAttempted)

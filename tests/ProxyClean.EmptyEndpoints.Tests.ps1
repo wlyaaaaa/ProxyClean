@@ -85,7 +85,8 @@ Describe 'Empty proxy endpoints do not hide running clients' {
                 $r.snapshot.listener_candidates.Count|Should -Be 1
             }else{
                 $r.status|Should -Be client_preview
-                $r.plan.key|Should -Be clash-core
+                $r.plan.family_key|Should -Be clash-core
+                $r.plan.key|Should -Match '^clash-core@880111@'
                 $r.plan.ports|Should -Contain 41234
             }
             Should -Invoke Stop-Process -Times 0

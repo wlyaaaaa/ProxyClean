@@ -44,6 +44,33 @@ Describe 'Client selection is independent of a hard-coded port' {
         $rows=@((New-ClientNode 10001 clash-verge),(New-ClientNode 10002 mihomo))
         @(Get-PCClientInventory -Processes $rows).Count|Should -Be 2
     }
+    It 'offers independent same-family cores as separate port-bound choices' {
+        $rows=@((New-ClientNode 10001 xray),(New-ClientNode 10002 xray))
+        $listeners=@([pscustomobject]@{OwningProcess=10001;LocalAddress='127.0.0.1';LocalPort=45001},[pscustomobject]@{OwningProcess=10002;LocalAddress='127.0.0.1';LocalPort=45002})
+        $r=@(Get-PCClientInventory -Processes $rows -Listeners $listeners)
+        $r.Count|Should -Be 2
+        @($r.key|Select-Object -Unique).Count|Should -Be 2
+        @($r.label|Select-Object -Unique).Count|Should -Be 2
+        foreach($client in $r){$client.family_key|Should -Be xray;$client.members.Count|Should -Be 1;$client.ports.Count|Should -Be 1}
+    }
+    It 'keeps a same-family core descendant with its actual root' {
+        $rows=@((New-ClientNode 10001 xray),(New-ClientNode 10002 xray -Parent 10001),(New-ClientNode 10003 xray))
+        $r=@(Get-PCClientInventory -Processes $rows)
+        $r.Count|Should -Be 2
+        @($r|Where-Object {$_.members.ProcessId -contains 10001})[0].members.Count|Should -Be 2
+    }
+    It 'does not merge dedicated standalone cores without a controller or broker' {
+        $r=@(Get-PCClientInventory -Processes @((New-ClientNode 10001 FlyingBirdCore),(New-ClientNode 10002 FlyingBirdCore)))
+        $r.Count|Should -Be 2
+        @($r.family_key|Select-Object -Unique)|Should -Be flyingbird
+    }
+    It 'does not assign an independent branded core to a GUI by its name alone' {
+        $rows=@((New-ClientNode 10001 FlyingBird),(New-ClientNode 10002 FlyingBirdHelperService -Session 0),(New-ClientNode 10003 FlyingBirdCore -Parent 10002 -Session 0),(New-ClientNode 10004 FlyingBirdCore))
+        $r=@(Get-PCClientInventory -Processes $rows)
+        $r.Count|Should -Be 2
+        @($r|Where-Object key -eq flyingbird)[0].members.Count|Should -Be 3
+        @($r|Where-Object {$_.members.ProcessId -contains 10004})[0].members.Count|Should -Be 1
+    }
     It 'recognizes an arbitrary published port and deduplicates listener families' {
         $rows=@((New-ClientNode 10001 verge-mihomo))
         $listeners=@([pscustomobject]@{OwningProcess=10001;LocalAddress='127.0.0.1';LocalPort=41234},[pscustomobject]@{OwningProcess=10001;LocalAddress='::1';LocalPort=41234})
@@ -60,6 +87,15 @@ Describe 'Client selection is independent of a hard-coded port' {
         $r=@(Get-PCClientInventory -Processes @((New-ClientNode 10001 FlyingBird)))
         $text=ConvertTo-PCPublicClients $r|ConvertTo-Json -Depth 8
         $text|Should -Not -Match 'ExecutablePath|C:\\Fixture|members|CommandLine'
+    }
+}
+Describe 'Selected independent core close checks preserve the other instance' {
+    It 'does not treat a known independent instance as the selected core restarting' {
+        $plan=[pscustomobject]@{key='xray@10001@first';family_key='xray';other_instances=@('xray@10002@second');members=@([pscustomobject]@{path='C:\Fixture\xray.exe'})}
+        $other=[pscustomobject]@{key='xray@10002@second';family_key='xray';members=@([pscustomobject]@{ExecutablePath='C:\Fixture\xray.exe'})}
+        Test-PCSelectedClientPresent -Plan $plan -Inventory @($other)|Should -BeFalse
+        $replacement=[pscustomobject]@{key='xray@10003@third';family_key='xray';members=@([pscustomobject]@{ExecutablePath='C:\Fixture\xray.exe'})}
+        Test-PCSelectedClientPresent -Plan $plan -Inventory @($other,$replacement)|Should -BeTrue
     }
 }
 Describe 'All selected client ports are one reversible settings operation' {
@@ -268,6 +304,23 @@ Describe 'Client previews preserve intent without executing shutdown' {
             $r=Get-PCClientClosePreview
             $r.status|Should -Be choose_client;$r.clients.Count|Should -Be 2
             Should -Invoke Get-PCProcessIdentity -Times 0
+            Should -Invoke Invoke-PCRepairPlan -Times 0
+        }
+    }
+    It 'previews only the selected independent instance and retains the other key' {
+        InModuleScope ProxyClean.Common {
+            $script:previewGroup.key='xray@991231@first'
+            $script:previewGroup|Add-Member -NotePropertyName family_key -NotePropertyValue xray
+            $other=[pscustomobject]@{key='xray@991232@second';family_key='xray';label='xray';requires_admin=$false;ports=@(34563);members=@()}
+            Mock Get-PCClientInventory {@($script:previewGroup,$other)}
+            $r=Get-PCClientClosePreview -ClientKey 'xray@991231@first'
+            $r.status|Should -Be client_preview
+            $r.plan.members.Count|Should -Be 1
+            $r.plan.members[0].pid|Should -Be 991231
+            $r.plan.ports|Should -HaveCount 1
+            $r.plan.ports|Should -Contain 34562
+            $r.plan.other_instances|Should -Contain 'xray@991232@second'
+            Should -Invoke Stop-Process -Times 0
             Should -Invoke Invoke-PCRepairPlan -Times 0
         }
     }

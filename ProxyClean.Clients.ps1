@@ -27,18 +27,29 @@ function Get-PCClientInventory {
         if(-not $family){continue}
         # A generic core is assigned to its actual controller, never to a brand
         # merely because a similarly named GUI happens to be running.
-        $parentId=[int]$p.ParentProcessId;$visited=@()
+        $parentId=[int]$p.ParentProcessId;$visited=@();$coreRoot=$p
+        $managed=(Test-PCClientController $p.Name) -or (Test-PCClientBroker $p.Name)
         while($all.ContainsKey($parentId) -and $parentId -notin $visited){
             $visited+=@($parentId);$parent=$all[$parentId]
             $childBorn=Get-PCValue $p 'CreationDate';$parentBorn=Get-PCValue $parent 'CreationDate'
             if($childBorn -and $parentBorn -and [DateTime]$parentBorn -gt [DateTime]$childBorn){break}
             if([int]$parent.SessionId -notin @(0,$session)){break}
             $owner=Get-PCClientFamily $parent.Name
-            if($owner -and $owner.key -in @('flyingbird','clash-verge','clash-windows','tag')){$family=$owner;break}
+            if($owner -and $owner.key -in @('flyingbird','clash-verge','clash-windows','tag')){
+                $family=$owner;$coreRoot=$parent
+                if((Test-PCClientController $parent.Name) -or (Test-PCClientBroker $parent.Name)){$managed=$true;break}
+            }
+            if($owner -and $owner.key -ceq $family.key){$coreRoot=$parent}
             $parentId=[int]$parent.ParentProcessId
         }
-        if(-not $groups.ContainsKey($family.key)){$groups[$family.key]=[pscustomobject]@{key=$family.key;label=$family.label;members=@();ports=@();published=$false;requires_admin=$false}}
-        $group=$groups[$family.key]
+        $groupKey=$family.key
+        if(-not $managed){
+            $born=Get-PCValue $coreRoot 'CreationDate'
+            $stamp=if($born){([DateTime]$born).ToUniversalTime().Ticks}else{'unknown'}
+            $groupKey=$family.key+'@'+$coreRoot.ProcessId+'@'+$stamp
+        }
+        if(-not $groups.ContainsKey($groupKey)){$groups[$groupKey]=[pscustomobject]@{key=$groupKey;family_key=$family.key;label=$family.label;members=@();ports=@();published=$false;requires_admin=$false}}
+        $group=$groups[$groupKey]
         $group.members+=@($p)
         if([int]$p.SessionId -ne $session -or -not [string]$p.ExecutablePath){$group.requires_admin=$true}
         # A launch helper's control listener is not a proxy endpoint. It must
@@ -52,11 +63,18 @@ function Get-PCClientInventory {
             if(@($Endpoints|Where-Object{(Get-PCListenerState $_ @($row)) -eq 'listening'}).Count){$group.published=$true}
         }
     }
-    @($groups.Values|Where-Object {@($_.members|Where-Object {-not(Test-PCClientBroker $_.Name)}).Count -gt 0}|Sort-Object label|ForEach-Object{$_.ports=@($_.ports|Sort-Object -Unique);$_})
+    $clients=@($groups.Values|Where-Object {@($_.members|Where-Object {-not(Test-PCClientBroker $_.Name)}).Count -gt 0}|Sort-Object label,key)
+    foreach($client in $clients){
+        $client.ports=@($client.ports|Sort-Object -Unique)
+        if(@($clients|Where-Object family_key -ceq $client.family_key).Count -gt 1){
+            $client.label+='（进程 '+(($client.members|Sort-Object ProcessId|Select-Object -First 1).ProcessId)+'）'
+        }
+        $client
+    }
 }
 function ConvertTo-PCPublicClients {
     param([AllowEmptyCollection()][object[]]$Clients=@())
-    @($Clients|ForEach-Object{[pscustomobject]@{key=$_.key;label=$_.label;process_count=@($_.members).Count;ports=@($_.ports);published=$_.published;requires_admin=$_.requires_admin}})
+    @($Clients|ForEach-Object{[pscustomobject]@{key=$_.key;family_key=(Get-PCValue $_ 'family_key' $_.key);label=$_.label;process_count=@($_.members).Count;ports=@($_.ports);published=$_.published;requires_admin=$_.requires_admin}})
 }
 function Get-PCProxySummary {
     param($Snapshot,[AllowEmptyCollection()][object[]]$Clients=@(),[string]$ClientObservation='observed')
@@ -107,7 +125,7 @@ function Get-PCClientClosePreview {
     $ids=@($identities|ForEach-Object pid)
     $services=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object{[int]$_.ProcessId -gt 4 -and [int]$_.ProcessId -in $ids}|ForEach-Object{[pscustomobject]@{name=[string]$_.Name;pid=[int]$_.ProcessId;path=[string]$_.PathName}})
     $repair=if($client.ports.Count){Get-PCRepairPlan -Snapshot $snapshot -Ports $client.ports}else{$null}
-    $plan=[pscustomobject]@{schema='proxyclean.client-close.v1';sid=$snapshot.sid;key=$client.key;label=$client.label;members=$identities;ports=@($client.ports);services=$services;refresh_dns_cache=$true;observedUtc=$snapshot.observedUtc}
+    $plan=[pscustomobject]@{schema='proxyclean.client-close.v1';sid=$snapshot.sid;key=$client.key;family_key=(Get-PCValue $client 'family_key' $client.key);other_instances=@($clients|Where-Object key -cne $client.key|ForEach-Object key);label=$client.label;members=$identities;ports=@($client.ports);services=$services;refresh_dns_cache=$true;observedUtc=$snapshot.observedUtc}
     [pscustomobject]@{status='client_preview';plan=$plan;public=ConvertTo-PCPublicClientPlan $plan;actions=@($(if($repair){$repair.steps|ForEach-Object{Get-PCStepLabel $_}|Select-Object -Unique}))}
 }
 function ConvertTo-PCPublicClientPlan {
@@ -206,9 +224,9 @@ function Invoke-PCClientClose {
         }while($true)
         $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)
         $inventory=@(Get-PCClientInventory -Listeners $listeners)
-        $sameClient=@($inventory|Where-Object key -ceq $Plan.key)
+        $sameClient=Test-PCSelectedClientPresent -Plan $Plan -Inventory $inventory
         $portState=Get-PCClientPortState -Plan $Plan -Inventory $inventory
-        if($remaining.Count -or $sameClient.Count -or @($portState.unknown).Count){
+        if($remaining.Count -or $sameClient -or @($portState.unknown).Count){
             return [pscustomobject]@{status='client_still_running';key=$Plan.key;label=$Plan.label;force_attempted=$forceAttempted;previous_plan=$Plan;settings_changed=$false;message='客户端未完全退出，或端口被重新占用。尚未清理代理设置。'}
         }
         # Verge 2.x service recovery remembers that the core should be running.
