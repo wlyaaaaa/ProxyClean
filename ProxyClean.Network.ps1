@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Loaded by ProxyClean.Common; only explicit callers invoke mutations.
 function Test-PCAdministrator {
     $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -184,20 +184,89 @@ function Invoke-PCIPv6Change {
     [pscustomobject]@{status=if($WhatIfPreference){'preview'}else{'binding_verified'};changed=$changed.Count;enabled=$enable;proxy_routing='not_tested';internet_reachability='not_tested'}
 }
 
+function Get-PCObservedHttpEndpoints {
+    param([Parameter(Mandatory)]$Snapshot)
+    if(Get-PCValue $Snapshot 'systemProxy'){$Snapshot=ConvertTo-PCPublicSnapshot $Snapshot}
+    $seen=@{}
+    foreach($row in @(Get-PCValue $Snapshot 'stored_endpoints' @())){
+        if(-not $row.parsed -or -not $row.local -or $row.state -ne 'listening' -or $row.scheme -notin @('http','https') -or $row.mapping -eq 'socks' -or $row.credentials_present -or $row.parameters_present){continue}
+        foreach($e in @(Get-ProxyEndpoints $row.endpoint)){
+            $hostText=if($e.family -eq 'InterNetworkV6'){'['+$e.host+']'}else{$e.host}
+            $url=$e.scheme+'://'+$hostText+':'+$e.port
+            if(-not $seen.ContainsKey($url)){
+                $seen[$url]=$true
+                [pscustomobject]@{name='forced-local-'+$e.port;proxy=$url;source=$row.source;listener_state='listening';http_proxy_confirmed=$false}
+            }
+        }
+    }
+}
+function Get-PCAddressFamilyObservation {
+    param([string]$HostName,[ValidateSet('IPv4','IPv6')][string]$Family)
+    $type=if($Family -eq 'IPv4'){'A'}else{'AAAA'}
+    try{
+        $records=@(Resolve-DnsName -Name $HostName -Type $type -DnsOnly -QuickTimeout -ErrorAction Stop|Where-Object {$_.Type -eq $type})
+        [pscustomobject]@{status=if($records.Count){'address_available'}else{'no_address_for_family'};fake_ip_detected=@($records|Where-Object{[string]$_.IPAddress -match '^198\.1[89]\.'}).Count -gt 0}
+    }catch{
+        $noRecords=$_.FullyQualifiedErrorId -match 'DNS_INFO_NO_RECORDS' -or (Get-PCValue $_.Exception 'NativeErrorCode') -eq 9501
+        [pscustomobject]@{status=if($noRecords){'no_address_for_family'}else{'resolution_not_confirmed'};fake_ip_detected=$false}
+    }
+}
+function Test-PCNetworkPaths {
+    param([Parameter(Mandatory)]$Snapshot,[scriptblock]$Progress)
+    $curl=Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1
+    if(-not $curl){return [pscustomobject]@{status='not_available';direct_route_proven=$false}}
+    $paths=@([pscustomobject]@{name='no-explicit-proxy';proxy=$null;source='bypass-explicit-proxy';listener_state='not_applicable'})
+    $paths+=@(Get-PCObservedHttpEndpoints -Snapshot $Snapshot)
+    $targets=@([pscustomobject]@{name='国内网页';url='https://www.baidu.com/'},[pscustomobject]@{name='海外网页';url='https://www.google.com/generate_204'},[pscustomobject]@{name='AI 服务';url='https://chatgpt.com/'})
+    $rows=New-Object 'Collections.Generic.List[object]'
+    foreach($target in $targets){
+        foreach($path in $paths){
+            $families=if($path.proxy){@('proxy-managed')}else{@('IPv4','IPv6')}
+            foreach($family in $families){
+                Write-PCProgress $Progress 'connectivity' ('正在检查'+$target.name+' · '+$family+' · '+$path.name+'…')
+                $dns=if($path.proxy){[pscustomobject]@{status='proxy_resolves_destination';fake_ip_detected=$false}}else{Get-PCAddressFamilyObservation -HostName ([Uri]$target.url).Host -Family $family}
+                $row=[pscustomobject]@{target=$target.name;family=$family;path=$path.name;source=$path.source;listener_state=$path.listener_state;status='not_tested';http_code=$null;exit_code=$null;dns=$dns;http_proxy_confirmed=$false;direct_route_proven=$false}
+                if($dns.status -eq 'no_address_for_family'){$row.status='no_address_for_family';$rows.Add($row);continue}
+                $probeArgs=@('--silent','--show-error','--output','NUL','--write-out','%{http_code}','--connect-timeout','3','--max-time','5')
+                if($path.proxy){$probeArgs+=@('--proxy',$path.proxy,'--noproxy','')}
+                else{$probeArgs+=@('--noproxy','*',$(if($family -eq 'IPv4'){'-4'}else{'-6'}))}
+                $probeArgs+=@($target.url)
+                try{
+                    $r=Invoke-PCNative -FilePath $curl.Source -ArgumentList $probeArgs -AllowedExitCodes @(0,5,6,7,28,35,52,56,60) -TimeoutSeconds 7
+                    $row.exit_code=[int](Get-PCValue $r 'exit_code' 0);$row.http_code=$r.stdout.Trim()
+                    $responded=$row.exit_code -eq 0 -and $row.http_code -match '^[1-5]\d\d$'
+                    $row.http_proxy_confirmed=[bool]($path.proxy -and $responded)
+                    $row.status=if($responded){if($row.http_code -match '^2\d\d$'){'http_reachable'}else{'http_responded'}}elseif($row.exit_code -in @(5,6)){'resolution_not_confirmed'}else{'connection_not_confirmed'}
+                }catch{$row.status='connection_not_confirmed'}
+                $rows.Add($row)
+            }
+        }
+    }
+    [pscustomobject]@{status='paths_diagnosed';probes=$rows.ToArray();dns_dependency=Get-PCDnsDependency;direct_route_proven=$false;settings_changed=$false;all_applications_working='not_proven'}
+}
+function Format-PCNetworkPaths {
+    param([Parameter(Mandatory)]$Diagnosis)
+    foreach($row in @($Diagnosis.probes)){
+        $path=if($row.path -eq 'no-explicit-proxy'){'无显式代理 '+$row.family}else{'HTTP 端点 '+($row.path -replace '^forced-local-','')+$(if($row.source -eq 'stored'){'（系统代理关闭，仅存储且正在监听）'}else{'（系统代理已发布）'})}
+        $state=switch($row.status){
+            'http_reachable'{'网页响应 '+$row.http_code}
+            'http_responded'{'HTTP 已到达，服务返回 '+$row.http_code+'（不代表功能正常）'}
+            'no_address_for_family'{'域名没有该地址族记录，未测试该链路'}
+            'resolution_not_confirmed'{'域名解析未确认'}
+            default{'连接未确认'}
+        }
+        if($row.dns.fake_ip_detected){$state+='；解析得到代理 Fake-IP，仍可能经过 TUN'}
+        if($row.family -eq 'proxy-managed'){$state+='；目标地址族由代理决定'}
+        $row.target+' · '+$path+'：'+$state
+    }
+}
 function Get-PCExitComparison {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Snapshot)
     $curl=Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1
     if(-not $curl){return [pscustomobject]@{path='process-default';status='unavailable'}}
     $paths=@([pscustomobject]@{name='process-default';proxy=$null})
-    if($Snapshot.systemProxy -and $Snapshot.systemProxy.enabled){
-        foreach($e in @(Get-ProxyEndpoints $Snapshot.systemProxy.server)){
-            if(-not $e.local -or $e.credentials_present -or (Get-PCListenerState $e $Snapshot.listeners ($Snapshot.availability.listeners -eq 'observed')) -ne 'listening'){continue}
-            $hostText=if($e.family -eq 'InterNetworkV6'){'['+$e.host+']'}else{$e.host}
-            $proxy=$e.scheme+'://'+$hostText+':'+$e.port
-            if($proxy -notin @($paths|ForEach-Object{$_.proxy})){$paths+=@([pscustomobject]@{name='forced-local-'+$e.port;proxy=$proxy})}
-        }
-    }
+    $paths+=@(Get-PCObservedHttpEndpoints -Snapshot $Snapshot)
     $groups=@{}
     foreach($path in $paths){
         try{
@@ -208,7 +277,7 @@ function Get-PCExitComparison {
             [Net.IPAddress]$ip=$null
             if(-not [Net.IPAddress]::TryParse($r.stdout.Trim(),[ref]$ip)){throw 'Exit probe did not return an IP address.'}
             $key=$ip.ToString();if(-not $groups.ContainsKey($key)){$groups[$key]='exit-group-'+($groups.Count+1)}
-            [pscustomobject]@{path=$path.name;status='observed';exit_group=$groups[$key];address_redacted=$true;identifies_client=$false}
-        }catch{[pscustomobject]@{path=$path.name;status='unknown';exit_group=$null;address_redacted=$true;identifies_client=$false}}
+            [pscustomobject]@{path=$path.name;source=(Get-PCValue $path 'source' 'process-default');status='observed';exit_group=$groups[$key];address_redacted=$true;identifies_client=$false}
+        }catch{[pscustomobject]@{path=$path.name;source=(Get-PCValue $path 'source' 'process-default');status='unknown';exit_group=$null;address_redacted=$true;identifies_client=$false}}
     }
 }

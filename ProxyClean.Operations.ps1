@@ -333,6 +333,8 @@ namespace ProxyClean { public static class Notifications {
     [pscustomobject]@{wininet_notified=$a -and $b;already_running_process_environment_refreshed=$false}
 }
 function Test-PCConnectivity {
+    param([switch]$Detailed,$Snapshot,[scriptblock]$Progress)
+    if($Detailed){return Test-PCNetworkPaths -Snapshot $Snapshot -Progress $Progress}
     $curl=Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1
     if(-not $curl){return [pscustomobject]@{status='not_available';scope='HTTP only';direct_route_proven=$false}}
     $probes=New-Object 'Collections.Generic.List[object]'

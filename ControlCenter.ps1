@@ -167,6 +167,15 @@ function Show-PCResult {
             Show-PCResult $Result.inspection
             $v=$Result.inspection.view
             if($v.blocked){return}
+            if($Result.connectivity.status -eq 'paths_diagnosed'){
+                $rows=@(Format-PCNetworkPaths $Result.connectivity)
+                $pc.ui.DetailsText.Text+="`r`n`r`n"+($rows -join "`r`n")
+                $pc.copy=[pscustomobject]@{snapshot=$Result.inspection.snapshot;connectivity=$Result.connectivity}|ConvertTo-Json -Depth 14
+                $pc.ui.CopyButton.IsEnabled=$true
+                if($v.change_count){Set-PCScreen $v.title '将只修复已列出的失效设置。各网站与路径的检查结果独立显示，确认后才修改。' '开始修复' 'Repair' 'warning' @($v.actions+$rows)}
+                else{Set-PCScreen '各网站与联网路径已分别检查' '下面是这次的分项结果。跳过显式代理仍可能经过 TUN；有网页响应也不代表该网站或 AI 功能都正常。' -Tone warning -Actions $rows}
+                return
+            }
             if($v.change_count){
                 Set-PCScreen $v.title '将修复下面这些失效设置，不会关闭正在使用的代理。确认后保存原设置、修复并自动核验。' '开始修复' 'Repair' 'warning' $v.actions
                 if($v.requires_admin -and -not $pc.admin){$pc.ui.Primary.Content='授权后继续修复'}
@@ -234,6 +243,7 @@ function Show-PCResult {
         'recovered'{Set-PCScreen '已恢复上次修改的设置' '只恢复了仍属于上次操作的设置。没有重启已结束的进程，也不代表网络一定恢复。';$pc.ui.UndoButton.Visibility='Collapsed'}
         'nothing_to_undo'{Set-PCScreen '没有可恢复的修改' '尚无修改记录，或上次修改已经恢复。';$pc.ui.UndoButton.Visibility='Collapsed'}
         'http_reachable'{Set-PCScreen '测试网页可以连接' '基础测试网页已成功响应。其他网站和应用可能不同；这项测试也不证明流量绕过了代理隧道。'}
+        'paths_diagnosed'{Set-PCScreen '各网站与联网路径已分别检查' '结果按网站与路径分别显示，没有修改网络。跳过显式代理仍可能经过 TUN；代理的目标地址族由代理决定。' -Tone warning -Actions @(Format-PCNetworkPaths $Result.operation)}
         'dns_resolution_failed'{Set-PCScreen '域名解析失败' (Get-PCConnectivityFailureMessage $Result) -Tone warning}
         'http_not_confirmed'{Set-PCScreen '测试网页暂时未能连接' '不能据此认定所有网络都中断。先重新检查代理；不要反复清理同一项设置。' -Tone warning}
         'not_available'{Set-PCScreen '当前无法执行网页测试' '没有找到系统网页测试工具。代理检查结果仍可使用。' -Tone warning}

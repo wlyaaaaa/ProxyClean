@@ -219,11 +219,17 @@ function Get-PCSnapshot {
     param([switch]$SkipConsumers,[scriptblock]$Progress)
     Write-PCProgress $Progress 'listeners' '正在检查本机代理是否仍在运行…'
     $availability=[ordered]@{}
-    $listeners=@();$adapters=@();$routes=@();$proxy=$null;$environment=@();$git=@()
+    $listeners=@();$adapters=@();$routes=@();$diagnosticRoutes=@();$ipInterfaces=@();$proxy=$null;$environment=@();$git=@()
     try{$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop);$availability.listeners='observed'}catch{$availability.listeners='unknown'}
     Write-PCProgress $Progress 'network' '正在检查网卡与默认连接…'
     try{$adapters=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop);$availability.adapters='observed'}catch{$availability.adapters='unknown'}
-    try{$routes=@(Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop|Where-Object{$_.DestinationPrefix -in @('0.0.0.0/0','::/0')});$availability.routes='observed'}catch{$availability.routes='unknown'}
+    try{
+        $allRoutes=@(Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop)
+        $routes=@($allRoutes|Where-Object{$_.DestinationPrefix -in @('0.0.0.0/0','::/0')})
+        $diagnosticRoutes=@($allRoutes|Where-Object{$_.DestinationPrefix -in @('0.0.0.0/0','::/0','0.0.0.0/1','128.0.0.0/1','::/1','8000::/1')})
+        $availability.routes='observed'
+    }catch{$availability.routes='unknown'}
+    try{$ipInterfaces=@(Get-NetIPInterface -ErrorAction Stop)}catch{}
     Write-PCProgress $Progress 'settings' '正在读取 Windows 代理与终端设置…'
     try{
         $key=Get-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
@@ -250,7 +256,7 @@ function Get-PCSnapshot {
     }else{$availability.winhttp='not_inspected';$availability.docker='not_inspected'}
     $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
     [pscustomobject]@{observedUtc=[DateTimeOffset]::UtcNow.ToString('O');sid=$identity.User.Value;isSystem=$identity.IsSystem;sessionId=(Get-Process -Id $PID).SessionId
-        availability=[pscustomobject]$availability;listeners=$listeners;adapters=$adapters;routes=$routes;systemProxy=$proxy;environment=$environment;git=$git;winhttp=$winhttp;docker=$docker}
+        availability=[pscustomobject]$availability;listeners=$listeners;adapters=$adapters;routes=$routes;diagnosticRoutes=$diagnosticRoutes;ipInterfaces=$ipInterfaces;systemProxy=$proxy;environment=$environment;git=$git;winhttp=$winhttp;docker=$docker}
 }
 function ConvertTo-PCPublicSnapshot {
     [CmdletBinding()]
@@ -258,6 +264,10 @@ function ConvertTo-PCPublicSnapshot {
     $proxy=$Snapshot.systemProxy
     $endpoints=@(if($proxy -and $proxy.enabled){Get-ProxyEndpoints $proxy.server})
     $rows=@(foreach($e in $endpoints){[pscustomobject]@{endpoint=Get-PCSafeProxyValue $e.raw;local=$e.local;parsed=$e.parsed;state=Get-PCListenerState $e $Snapshot.listeners ($Snapshot.availability.listeners -eq 'observed')}})
+    $stored=@(if($proxy){foreach($e in @(Get-ProxyEndpoints $proxy.server)){
+        [pscustomobject]@{endpoint=Get-PCSafeProxyValue $e.raw;local=$e.local;parsed=$e.parsed;scheme=$e.scheme;mapping=$e.mapping;port=$e.port;credentials_present=$e.credentials_present;parameters_present=$e.parameters_present;
+            state=Get-PCListenerState $e $Snapshot.listeners ($Snapshot.availability.listeners -eq 'observed');source=if($proxy.enabled){'published'}else{'stored'};http_proxy_confirmed=$false}
+    }})
     $routeRows=@(foreach($route in $Snapshot.routes){
         $index=Get-PCValue $route 'InterfaceIndex' (Get-PCValue $route 'ifIndex')
         $ad=@($Snapshot.adapters|Where-Object{(Get-PCValue $_ 'InterfaceIndex' (Get-PCValue $_ 'ifIndex')) -eq $index})
@@ -270,7 +280,17 @@ function ConvertTo-PCPublicSnapshot {
         listener_candidates=@(Get-PCListenerCandidates -Listeners $Snapshot.listeners -Endpoints @($endpoints))
         conclusion=@{current_default='not_probed';simultaneous_routing_paths=(@($rows|Where-Object state -eq 'listening').Count+$tun.Count) -gt 1;consumer_local_proxy_pin_present=(Get-PCValue $Snapshot.docker 'local_manual_pin_present' $false);network_recovered='not_tested'}
         system_proxy=@{enabled=if($proxy){$proxy.enabled}else{$null};server=if($proxy){Get-PCSafeProxyValue $proxy.server}else{$null};pac_configured=[bool]($proxy -and $proxy.pac);published_local_ports=@($endpoints|Where-Object local|Select-Object -ExpandProperty port -Unique)}
-        endpoints=$rows;listeners=@($rows|Where-Object state -eq 'listening');tun_routes=$tun;default_routes=$routeRows
+        endpoints=$rows;stored_endpoints=$stored;listeners=@($rows|Where-Object state -eq 'listening');tun_routes=$tun;default_routes=$routeRows
+        routing_observations=@(foreach($route in @(Get-PCValue $Snapshot 'diagnosticRoutes' @())){
+            $index=Get-PCValue $route 'InterfaceIndex' (Get-PCValue $route 'ifIndex')
+            $ad=@($Snapshot.adapters|Where-Object{(Get-PCValue $_ 'InterfaceIndex' (Get-PCValue $_ 'ifIndex')) -eq $index})
+            $family=if([string]$route.DestinationPrefix -match ':'){'IPv6'}else{'IPv4'}
+            $ip=@((Get-PCValue $Snapshot 'ipInterfaces' @())|Where-Object {$_.InterfaceIndex -eq $index -and [string]$_.AddressFamily -eq $family})
+            $metric=if($ip.Count -eq 1){[int]$ip[0].InterfaceMetric}else{$null}
+            [pscustomobject]@{interface=[string]$route.InterfaceAlias;destination=[string]$route.DestinationPrefix;family=$family;route_metric=[int]$route.RouteMetric;interface_metric=$metric;
+                combined_metric=if($null -ne $metric){[int]$route.RouteMetric+$metric}else{$null};on_link=([string]$route.NextHop -in @('0.0.0.0','::'));
+                tunnel_adapter_observed=($ad.Count -eq 1 -and -not(Get-PCValue $ad[0] 'HardwareInterface' $false) -and ([string]$ad[0].Name+' '+[string]$ad[0].InterfaceDescription) -match '(?i)Tunnel|TUN|Wintun|Clash|FlyingBird');actual_destination_route='not_probed'}
+        })
         environment=@($Snapshot.environment|ForEach-Object{[pscustomobject]@{name=$_.name;scope=$_.scope;configured=-not [string]::IsNullOrEmpty($_.value);endpoint=Get-PCSafeProxyValue $_.value}})
         git_proxy=@($Snapshot.git|ForEach-Object{[pscustomobject]@{key=$_.key;values=@($_.values|ForEach-Object{Get-PCSafeProxyValue $_})}})
         winhttp=$Snapshot.winhttp;docker_proxy=$Snapshot.docker;exit_probes=@()

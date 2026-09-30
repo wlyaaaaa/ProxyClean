@@ -108,6 +108,13 @@ function Format-PCInspection {
         $state=switch($e.state){'listening'{'对应端口正在运行'}'dead'{'对应本机端口未运行'}'remote'{'远程代理，保留'}default{'状态未能确认，保留'}}
         $lines.Add($e.endpoint+'：'+$state)
     }
+    foreach($e in @((Get-PCValue $Snapshot 'stored_endpoints' @())|Where-Object {$_.source -eq 'stored' -and $_.state -eq 'listening'})){
+        $lines.Add('未启用的存储端点 '+$e.endpoint+'：对应端口正在监听，HTTP 能力仍需实际请求确认。')
+    }
+    foreach($route in @(Get-PCValue $Snapshot 'routing_observations' @())){
+        $metric=if($null -ne $route.combined_metric){[string]$route.combined_metric}else{'未确认'}
+        $lines.Add($route.family+' 路由 '+$route.destination+' · '+$route.interface+'：路由与接口合计跃点 '+$metric+$(if($route.on_link){'；on-link（网卡直接路由）'}else{''})+$(if($route.tunnel_adapter_observed){'；隧道网卡'}else{''})+'。具体网站实际出口未探测。')
+    }
     if(@($Snapshot.tun_routes).Count){$lines.Add('检测到活动代理隧道路由，默认修复会保留。')}
     if($Snapshot.conclusion.consumer_local_proxy_pin_present){$lines.Add('Docker 仍指定了本机代理；需要在 Docker 中单独调整。')}
     foreach($row in @($Snapshot.environment|Where-Object configured)){
@@ -132,9 +139,9 @@ function Invoke-PCWorkflow {
                 $inspection=Invoke-PCWorkflow Inspect -Progress $Progress
                 if($inspection.status -ne 'inspected'){return $inspection}
                 $probe=[pscustomobject]@{status='not_tested'}
-                if(-not $inspection.view.blocked -and -not @($inspection.plan.steps).Count){
-                    Write-PCProgress $Progress 'connectivity' '没有发现可修复的代理设置，正在测试基础网页连接…'
-                    $probe=Test-PCConnectivity
+                if(-not $inspection.view.blocked){
+                    Write-PCProgress $Progress 'connectivity' '正在分别检查国内、海外与 AI 服务的联网路径…'
+                    $probe=Test-PCConnectivity -Detailed -Snapshot $inspection.snapshot -Progress $Progress
                 }
                 return [pscustomobject]@{status='diagnosed';inspection=$inspection;connectivity=$probe}
             }
@@ -181,8 +188,8 @@ function Invoke-PCWorkflow {
                 return [pscustomobject]@{action=$Action;status=$result.status;operation=$result}
             }
             'Connectivity'{
-                Write-PCProgress $Progress 'connectivity' '正在连接微软测试网页；不会修改代理设置…'
-                $result=Test-PCConnectivity
+                Write-PCProgress $Progress 'connectivity' '正在分别检查网站与地址族；不会修改代理设置…'
+                $result=Test-PCConnectivity -Detailed -Snapshot (ConvertTo-PCPublicSnapshot (Get-PCSnapshot -SkipConsumers)) -Progress $Progress
                 return [pscustomobject]@{action=$Action;status=$result.status;operation=$result}
             }
             'StopPreview'{
