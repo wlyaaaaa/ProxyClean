@@ -123,30 +123,55 @@ function Enter-PCLock {
     return $mutex
 }
 function Get-PCJournalPath {Join-Path $env:LOCALAPPDATA 'ProxyClean\last-operation.dpapi'}
-function Save-PCJournal {
-    param([Parameter(Mandatory)]$Journal)
-    $path=Get-PCJournalPath;[IO.Directory]::CreateDirectory((Split-Path -Parent $path))|Out-Null
-    # Standard Windows current-user DPAPI avoids writing proxy credentials in plaintext.
-    $secure=ConvertTo-SecureString ($Journal|ConvertTo-Json -Depth 25 -Compress) -AsPlainText -Force
-    try{$text=ConvertFrom-SecureString $secure}finally{$secure.Dispose()}
-    $temp=$path+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
-    try{
-        $bytes=[Text.Encoding]::UTF8.GetBytes($text)
-        $stream=[IO.File]::Open($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-        try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
-        if(Test-Path -LiteralPath $path){[IO.File]::Replace($temp,$path,[NullString]::Value)}else{[IO.File]::Move($temp,$path)}
-    }finally{if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Force}}
-}
-function Get-PCJournal {
-    $path=Get-PCJournalPath;if(-not(Test-Path -LiteralPath $path)){return $null}
-    $secure=ConvertTo-SecureString (Get-Content -LiteralPath $path -Raw)
+function Read-PCJournalSlot {
+    param([string]$Path)
+    $secure=ConvertTo-SecureString ([IO.File]::ReadAllText($Path))
     try{$credential=New-Object Management.Automation.PSCredential('journal',$secure);$journal=$credential.GetNetworkCredential().Password|ConvertFrom-Json}finally{$secure.Dispose()}
     if($journal.schema -ne 'proxyclean.undo.v1' -or $journal.sid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value){throw 'The undo record does not belong to this Windows user.'}
     return $journal
 }
+function Get-PCJournalSlots {
+    $path=Get-PCJournalPath
+    $found=$false;$valid=@()
+    foreach($slot in @($path,($path+'.previous'))){
+        if(-not(Test-Path -LiteralPath $slot)){continue}
+        $found=$true
+        try{
+            $journal=Read-PCJournalSlot $slot
+            $generation=[long](Get-PCValue $journal 'storage_generation' 0)
+            $valid+=@([pscustomobject]@{path=$slot;journal=$journal;generation=$generation})
+        }catch{}
+    }
+    if($found -and -not $valid.Count){throw 'The undo record is unreadable for this Windows user.'}
+    @($valid|Sort-Object generation -Descending)
+}
+function Save-PCJournal {
+    param([Parameter(Mandatory)]$Journal)
+    $path=Get-PCJournalPath;[IO.Directory]::CreateDirectory((Split-Path -Parent $path))|Out-Null
+    # Keep the latest valid slot intact until the other encrypted slot is flushed
+    # and read back. This also works on EFS directories where ReplaceFile fails.
+    $slots=@(Get-PCJournalSlots)
+    $latest=if($slots.Count){$slots[0]}else{$null}
+    $destination=if($latest -and $latest.path -eq $path){$path+'.previous'}else{$path}
+    $generation=if($latest){$latest.generation+1}else{1}
+    $Journal|Add-Member -NotePropertyName storage_generation -NotePropertyValue $generation -Force
+    $secure=ConvertTo-SecureString ($Journal|ConvertTo-Json -Depth 25 -Compress) -AsPlainText -Force
+    try{$text=ConvertFrom-SecureString $secure}finally{$secure.Dispose()}
+    $bytes=[Text.Encoding]::UTF8.GetBytes($text)
+    $stream=[IO.File]::Open($destination,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+    $saved=Read-PCJournalSlot $destination
+    if([IO.File]::ReadAllText($destination) -cne $text -or $saved.storage_generation -ne $generation){throw 'Undo record write could not be verified.'}
+}
+function Get-PCJournal {
+    $slots=@(Get-PCJournalSlots)
+    if($slots.Count){return $slots[0].journal}
+    return $null
+}
 function Get-PCResourceValue {
     param([Parameter(Mandatory)]$Step)
     switch($Step.kind){
+        'ClientIntent'{[IO.File]::ReadAllText($Step.target_file)}
         'WinInet'{Get-PCRegistryValue -Area WinInet -Name $Step.name}
         'UserEnv'{Get-PCRegistryValue -Area UserEnv -Name $Step.name}
         'Git'{return ,@(Get-PCGitValues -Key $Step.name)}
@@ -163,6 +188,7 @@ function Get-PCResourceValue {
 function Set-PCResourceValue {
     param([Parameter(Mandatory)]$Step,[AllowNull()]$Value)
     switch($Step.kind){
+        'ClientIntent'{Set-PCClientIntentValue -Step $Step -Value $Value}
         {$_ -in @('WinInet','UserEnv')}{
             if($Step.kind -eq 'WinInet'){
                 if($Step.name -notin @('ProxyEnable','ProxyServer')){throw 'Unsupported WinINET field.'}
@@ -215,7 +241,7 @@ function Restore-PCJournal {
     $steps=@($Journal.steps)
     for($i=$steps.Count-1;$i -ge 0;$i--){
         $step=$steps[$i]
-        if($step.phase -in @('planned','restored')){continue}
+        if($step.phase -in @('planned','restored','committed')){continue}
         try{
             $current=Get-PCResourceValue $step
             if(-not(Test-PCSameValue $current $step.before)){
@@ -286,7 +312,8 @@ function Invoke-PCUndo {
 function Get-PCUndoSummary {
     $j=Get-PCJournal
     if(-not $j){return [pscustomobject]@{available=$false;phase='none'}}
-    [pscustomobject]@{available=$j.phase -ne 'undone';phase=$j.phase;resources=@($j.steps|ForEach-Object{$_.kind+':'+$_.name});remaining=@($j.remaining)}
+    $undoable=@($j.steps|Where-Object phase -ne 'committed')
+    [pscustomobject]@{available=($j.phase -ne 'undone' -and $undoable.Count -gt 0);phase=$j.phase;resources=@($undoable|ForEach-Object{$_.kind+':'+$_.name});remaining=@($j.remaining)}
 }
 function Send-PCSettingsChanged {
     if(-not('ProxyClean.Notifications' -as [type])){

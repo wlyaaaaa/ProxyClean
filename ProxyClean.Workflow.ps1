@@ -10,6 +10,7 @@ function Get-PCStepLabel {
         'WinInet'{'Windows 手动代理设置'}
         'UserEnv'{"终端代理变量 $($Step.name)"}
         'Git'{"Git 代理设置 $($Step.name)"}
+        'ClientIntent'{'Clash Verge 本次核心的自动恢复状态'}
         'Route'{if(Get-PCValue $Step 'allow_active_fake' $false){'代理隧道的默认网络路由（将移除）'}else{'已失效的默认网络路由'}}
         default{'选定的代理设置'}
     }
@@ -42,6 +43,9 @@ function ConvertTo-PCFriendlyError {
     switch -Regex ($message){
         'PC_CANCELLED|OperationCanceled'{return '检查已取消，没有修改网络设置。'}
         'PC_CLIENT_SERVICE_RESTORE_FAILED'{return '客户端退出后，启动辅助服务未能恢复；不能确认下次可以启动。请在客户端设置中修复服务，不要反复清理网络。'}
+        'PC_CLIENT_OWNER_CHANGED'{return 'Clash Verge 的运行实例或所属用户已变化。已停止本次操作，请重新检查。'}
+        'PC_CLIENT_STATE_UNSUPPORTED'{return '暂时无法读取 Clash Verge 的运行恢复状态，已保留原设置。请从 Clash Verge 托盘菜单退出后重新检查。'}
+        'PC_CLIENT_PORT_OCCUPIED'{return '原代理端口已被另一个尚未识别的程序占用，相关代理设置已保留。请重新检查端口归属。'}
         'PC_CLIENT_RESTARTED'{return '辅助服务恢复后，客户端又启动了核心。本次不能确认为已关闭；没有继续追杀新进程或重置网络。'}
         'Service identity changed|Process identity changed|Process identity unavailable'{return '所选程序或服务已变化，本次没有继续操作。请重新检查后再确认。'}
         'PC_PROXY_SERVER_CHANGED|Configuration changed|Git proxy changed|Route changed|identity changed'{return '设置在检查后发生了变化。本次已停止，请重新检查后再操作。'}
@@ -234,6 +238,6 @@ function Invoke-PCWorkflow {
 function Assert-PCExpectedClient {
     param($Plan,[string]$ExpectedClient='Any')
     if($ExpectedClient -eq 'Any'){return}
-    $pattern=switch($ExpectedClient){'TAG'{'(?i)^(?:tag|mihomo-tag|tag-mihomo)$'}'ClashVerge'{'(?i)^(?:clash-verge|verge-mihomo)$'}'FlyingBird'{'(?i)^FlyingBird(?:Core|HelperService)?$'}default{throw 'PC_LEGACY_CLIENT_CHANGED'}}
+    $pattern=switch($ExpectedClient){'TAG'{'(?i)^(?:tag|mihomo-tag|tag-mihomo)$'}'ClashVerge'{'(?i)^(?:clash-verge|verge-mihomo(?:-alpha)?)$'}'FlyingBird'{'(?i)^FlyingBird(?:Core|HelperService)?$'}default{throw 'PC_LEGACY_CLIENT_CHANGED'}}
     if(@($Plan.processes|Where-Object{$_.name -notmatch $pattern}).Count){throw 'PC_LEGACY_CLIENT_CHANGED'}
 }

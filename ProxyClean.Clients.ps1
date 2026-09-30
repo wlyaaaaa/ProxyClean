@@ -4,7 +4,7 @@ function Get-PCClientFamily {
     param([string]$Name)
     switch -Regex ($Name -replace '(?i)\.exe$','') {
         '^(?i:FlyingBird(?:Core|HelperService)?)$' {return [pscustomobject]@{key='flyingbird';label='飞鸟'}}
-        '^(?i:clash-verge|verge-mihomo|clash-verge-service|verge-service)$' {return [pscustomobject]@{key='clash-verge';label='Clash Verge'}}
+        '^(?i:clash-verge|verge-mihomo(?:-alpha)?|clash-verge-service|verge-service)$' {return [pscustomobject]@{key='clash-verge';label='Clash Verge'}}
         '^(?i:Clash for Windows|clash-win64|clash-win64-windows-amd64)$' {return [pscustomobject]@{key='clash-windows';label='Clash for Windows'}}
         '^(?i:tag|mihomo-tag|tag-mihomo)$' {return [pscustomobject]@{key='tag';label='TAG'}}
         '^(?i:clash|mihomo|clash-meta|clash-premium)$' {return [pscustomobject]@{key='clash-core';label='Clash / Mihomo'}}
@@ -41,6 +41,9 @@ function Get-PCClientInventory {
         $group=$groups[$family.key]
         $group.members+=@($p)
         if([int]$p.SessionId -ne $session -or -not [string]$p.ExecutablePath){$group.requires_admin=$true}
+        # A launch helper's control listener is not a proxy endpoint. It must
+        # remain available when the helper is restored for the next launch.
+        if(Test-PCClientBroker $p.Name){continue}
         foreach($row in @($Listeners|Where-Object{[int]$_.OwningProcess -eq [int]$p.ProcessId})){
             [Net.IPAddress]$ip=$null
             if(-not [Net.IPAddress]::TryParse([string]$row.LocalAddress,[ref]$ip)){continue}
@@ -133,11 +136,14 @@ function Stop-PCClientService {
     param($Service)
     $current=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $Service.name)
     if($current.Count -ne 1){throw 'Service identity changed.'}
+    if([string]$current[0].PathName -cne $Service.path){throw 'Service identity changed.'}
     if($current[0].State -eq 'Stopped'){return}
-    if([int]$current[0].ProcessId -ne $Service.pid -or [string]$current[0].PathName -cne $Service.path){throw 'Service identity changed.'}
+    if([int]$current[0].ProcessId -ne $Service.pid){throw 'Service identity changed.'}
     # Do not stop dependent services and never change a service's startup type.
-    if($current[0].State -eq 'Stop Pending'){return}
-    [void](Invoke-PCNative -FilePath (Join-Path $env:WINDIR 'System32\sc.exe') -ArgumentList @('stop',$Service.name) -AllowedExitCodes @(0,1062) -TimeoutSeconds 10)
+    if($current[0].State -ne 'Stop Pending'){
+        [void](Invoke-PCNative -FilePath (Join-Path $env:WINDIR 'System32\sc.exe') -ArgumentList @('stop',$Service.name) -AllowedExitCodes @(0,1062) -TimeoutSeconds 10)
+    }
+    (Get-Service -Name $Service.name -ErrorAction Stop).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(8))
 }
 function Invoke-PCClientClose {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
@@ -147,7 +153,7 @@ function Invoke-PCClientClose {
     if($identity.IsSystem -or $identity.User.Value -ne $Plan.sid){throw 'Use the same intended Windows user, never SYSTEM.'}
     if(-not $PSCmdlet.ShouldProcess($Plan.label,$(if($Force){'Force-close only the confirmed client'}else{'Request normal client and service shutdown'}))){return [pscustomobject]@{status='preview'}}
     $restore=New-Object 'Collections.Generic.List[object]'
-    $completed=$false
+    $forceAttempted=[bool]$Force
     $lock=Enter-PCLock
     try{
         $undo=Get-PCUndoSummary
@@ -156,7 +162,7 @@ function Invoke-PCClientClose {
         foreach($member in @($Plan.members)){if($member.pid -le 4 -or $member.pid -eq $PID){throw 'Ineligible process.'};[void](Test-PCClientProcess $member)}
         foreach($service in @($Plan.services)){
             $s=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
-            if($s.Count -ne 1 -or ($s[0].State -ne 'Stopped' -and ([int]$s[0].ProcessId -ne $service.pid -or [string]$s[0].PathName -cne $service.path))){throw 'Service identity changed.'}
+            if($s.Count -ne 1 -or [string]$s[0].PathName -cne $service.path -or ($s[0].State -ne 'Stopped' -and [int]$s[0].ProcessId -ne $service.pid)){throw 'Service identity changed.'}
         }
         # Preserve the original broker state before a GUI exit can stop it.
         foreach($service in @($Plan.services)){
@@ -165,6 +171,15 @@ function Invoke-PCClientClose {
         }
         Write-PCProgress $Progress 'close' ('正在请求'+$Plan.label+'正常退出…')
         foreach($member in @($Plan.members)){Request-PCClientWindowClose $member}
+        # A window close may only minimize a tray client. Remove its controller
+        # before stopping the broker, so it cannot race the service or restart it.
+        if($Force -or $ForceFallback){
+            $controllers=[pscustomobject]@{members=@($Plan.members|Where-Object {Test-PCClientController $_.name})}
+            if($controllers.members.Count){
+                $left=@(Wait-PCClientExit -Plan $controllers -WaitSeconds $(if($Force){0}else{$WaitSeconds}))
+                foreach($member in $left){$forceAttempted=$true;Stop-PCClientProcess $member}
+            }
+        }
         foreach($service in @($Plan.services)){
             Write-PCProgress $Progress 'service' ('正在停止'+$Plan.label+'的辅助服务…')
             $current=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
@@ -172,10 +187,9 @@ function Invoke-PCClientClose {
             if($current.Count -ne 1 -or [string]$current[0].PathName -cne $service.path){throw 'Service identity changed.'}
             Stop-PCClientService $service
         }
-        $forceAttempted=[bool]$Force
         if($ForceFallback -and -not $Force){
             $remaining=@(Wait-PCClientExit -Plan $Plan -WaitSeconds $WaitSeconds)
-            $forceAttempted=$remaining.Count -gt 0
+            $forceAttempted=$forceAttempted -or $remaining.Count -gt 0
         }
         if($forceAttempted){
             Write-PCProgress $Progress 'force' ('正在结束你确认的'+$Plan.label+'剩余进程…')
@@ -193,15 +207,38 @@ function Invoke-PCClientClose {
         $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)
         $inventory=@(Get-PCClientInventory -Listeners $listeners)
         $sameClient=@($inventory|Where-Object key -ceq $Plan.key)
-        $occupied=@(foreach($port in @($Plan.ports)){Get-PCLocalPortListeners -Port $port})
-        if($remaining.Count -or $sameClient.Count -or $occupied.Count){
+        $portState=Get-PCClientPortState -Plan $Plan -Inventory $inventory
+        if($remaining.Count -or $sameClient.Count -or @($portState.unknown).Count){
             return [pscustomobject]@{status='client_still_running';key=$Plan.key;label=$Plan.label;force_attempted=$forceAttempted;previous_plan=$Plan;settings_changed=$false;message='客户端未完全退出，或端口被重新占用。尚未清理代理设置。'}
         }
+        # Verge 2.x service recovery remembers that the core should be running.
+        # With the service stopped, clear only that runtime intent using the same
+        # encrypted journal and compare/write/readback path as other changes.
+        $intent=Get-PCClashVergeIntentStep -Plan $Plan
+        if($intent){
+            $intentPlan=[pscustomobject]@{schema='proxyclean.plan.v1';id=[Guid]::NewGuid().ToString('N');sid=$Plan.sid;steps=@($intent)}
+            $intentResult=Invoke-PCRepairPlan -Plan $intentPlan -Progress $Progress -Confirm:$false
+            if($intentResult.status -ne 'applied'){return [pscustomobject]@{status='client_settings_incomplete';label=$Plan.label;settings=$intentResult}}
+            # Like terminating a process, a completed close is not undone by
+            # restoring network settings: do not re-arm a later core resurrection.
+            $journal=Get-PCJournal
+            if(-not $journal -or $journal.id -cne $intentPlan.id){throw 'Configuration changed after preview; preserved.'}
+            $journal.steps[0].phase='committed';Save-PCJournal $journal
+        }
+        foreach($service in @($restore.ToArray())){
+            Write-PCProgress $Progress 'service' ('正在恢复'+$Plan.label+'的启动辅助服务…')
+            try{Restore-PCClientService $service}catch{throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
+            [void]$restore.Remove($service)
+        }
+        Write-PCProgress $Progress 'verify' '正在确认客户端保持关闭、辅助服务没有重新启动核心…'
+        Assert-PCClientStayedClosed -Plan $Plan
         Write-PCProgress $Progress 'verify' '客户端已退出，正在复查并清理它留下的代理引用…'
+        $portState=Get-PCClientPortState -Plan $Plan -Inventory @(Get-PCClientInventory -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop))
+        if(@($portState.unknown).Count){throw 'PC_CLIENT_PORT_OCCUPIED'}
         $snapshot=Get-PCSnapshot -Progress $Progress
         $settings=[pscustomobject]@{status='no_changes';changed=0}
-        if(@($Plan.ports).Count){
-            $repair=Get-PCRepairPlan -Snapshot $snapshot -Ports $Plan.ports
+        if(@($portState.closed).Count){
+            $repair=Get-PCRepairPlan -Snapshot $snapshot -Ports $portState.closed
             $settings=Invoke-PCRepairPlan -Plan $repair -Progress $Progress -Confirm:$false
             if($settings.status -eq 'applied'){[void](Send-PCSettingsChanged)}
         }
@@ -213,6 +250,7 @@ function Invoke-PCClientClose {
         $still=@(Get-PCClientInventory -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop))
         $probe=if($SkipConnectivityChecks){[pscustomobject]@{status='not_tested'}}else{Test-PCConnectivity}
         $limits=New-Object 'Collections.Generic.List[string]'
+        if(@($portState.reassigned).Count){$limits.Add('其他代理客户端已接管部分原端口，相关设置已保留')}
         if(@($after.availability.PSObject.Properties|Where-Object Value -eq 'unknown').Count){$limits.Add('部分网络状态未能确认')}
         if($dnsCache -eq 'failed'){$limits.Add('旧域名缓存未能刷新')}
         if($probe.status -eq 'dns_resolution_failed'){$limits.Add('DNS 解析失败，请检查本机 DNS 服务及不依赖代理的上游')}
@@ -223,7 +261,8 @@ function Invoke-PCClientClose {
         if($after.conclusion.consumer_local_proxy_pin_present){$limits.Add('其他应用仍指定代理')}
         if(@($after.environment|Where-Object{$_.configured -and $_.scope -ne 'Process'}).Count -or @($after.git_proxy|Where-Object{@($_.values).Count}).Count){$limits.Add('终端或 Git 仍有其他代理设置')}
         if($after.winhttp -and $after.winhttp.mode -ne 'direct'){$limits.Add('Windows 服务代理尚未确认为直连')}
-        $completed=$true
+        # Recheck after connectivity tests too; a late restart is never success.
+        Assert-PCClientStayedClosed -Plan $Plan -Milliseconds 0
         $result=[pscustomobject]@{status='client_closed';label=$Plan.label;settings=$settings;dns_cache=$dnsCache;connectivity=$probe;remaining=$limits.ToArray();all_applications_direct='not_proven'}
     }finally{
         $restoreErrors=New-Object 'Collections.Generic.List[string]'
@@ -233,10 +272,6 @@ function Invoke-PCClientClose {
                 catch{$restoreErrors.Add($service.name)}
             }
             if($restoreErrors.Count){throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
-            if($completed -and $restore.Count){
-                $restarted=@(Get-PCClientInventory -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop)|Where-Object key -ceq $Plan.key)
-                if($restarted.Count){throw 'PC_CLIENT_RESTARTED'}
-            }
         }finally{try{$lock.ReleaseMutex()}finally{$lock.Dispose()}}
     }
     $result

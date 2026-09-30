@@ -8,7 +8,7 @@ Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
 try{
     $plan=Get-PCStopPlan -Port $Port -ExtraProcessName $ExtraProcessName
         if($ExpectedClient -ne 'Any'){
-        $pattern=switch($ExpectedClient){'TAG'{'(?i)^(?:tag|mihomo-tag|tag-mihomo)$'}'ClashVerge'{'(?i)^(?:clash-verge|verge-mihomo)$'}'FlyingBird'{'(?i)^FlyingBird(?:Core|HelperService)?$'}}
+        $pattern=switch($ExpectedClient){'TAG'{'(?i)^(?:tag|mihomo-tag|tag-mihomo)$'}'ClashVerge'{'(?i)^(?:clash-verge|verge-mihomo(?:-alpha)?)$'}'FlyingBird'{'(?i)^FlyingBird(?:Core|HelperService)?$'}}
         if(@($plan.processes|Where-Object{$_.name -notmatch $pattern}).Count){throw 'The legacy shortcut port belongs to a different process; nothing was stopped.'}
     }
     $public=ConvertTo-PCPublicStopPlan $plan

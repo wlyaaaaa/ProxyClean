@@ -31,6 +31,15 @@ Describe 'Client selection is independent of a hard-coded port' {
         $r=@(Get-PCClientInventory -Processes $rows)
         $r.Count|Should -Be 1;$r[0].label|Should -Be 'Clash Verge';$r[0].members.Count|Should -Be 2
     }
+    It 'does not treat a helper control port as a proxy endpoint that must disappear' {
+        $rows=@((New-ClientNode 10001 FlyingBird),(New-ClientNode 10002 FlyingBirdHelperService -Session 0),(New-ClientNode 10003 FlyingBirdCore -Parent 10002 -Session 0))
+        $listeners=@([pscustomobject]@{OwningProcess=10002;LocalAddress='127.0.0.1';LocalPort=49890},[pscustomobject]@{OwningProcess=10003;LocalAddress='127.0.0.1';LocalPort=34567})
+        $r=@(Get-PCClientInventory -Processes $rows -Listeners $listeners)
+        $r[0].members.Count|Should -Be 3
+        $r[0].ports|Should -HaveCount 1
+        $r[0].ports|Should -Contain 34567
+        $r[0].ports|Should -Not -Contain 49890
+    }
     It 'does not merge an unrelated standalone core into a running controller' {
         $rows=@((New-ClientNode 10001 clash-verge),(New-ClientNode 10002 mihomo))
         @(Get-PCClientInventory -Processes $rows).Count|Should -Be 2
@@ -272,6 +281,7 @@ Describe 'Client previews preserve intent without executing shutdown' {
     It 'stops only an exact verified service with a bounded native request' {
         InModuleScope ProxyClean.Common {
             Mock Get-CimInstance {@([pscustomobject]@{Name='fixture-proxy-service';State='Running';ProcessId=991231;PathName='C:\Fixture\helper.exe'})}
+            Mock Get-Service {$c=[pscustomobject]@{};$c|Add-Member ScriptMethod WaitForStatus {param($state,$timeout) $state|Should -Be Stopped;$timeout.TotalSeconds|Should -Be 8};$c}
             Stop-PCClientService ([pscustomobject]@{name='fixture-proxy-service';pid=991231;path='C:\Fixture\helper.exe'})
             Should -Invoke Invoke-PCNative -Times 1 -ParameterFilter {$ArgumentList.Count -eq 2 -and $ArgumentList[0] -eq 'stop' -and $ArgumentList[1] -ceq 'fixture-proxy-service' -and $TimeoutSeconds -eq 10}
         }
@@ -297,6 +307,7 @@ Describe 'Final client-close audit regressions' {
         InModuleScope ProxyClean.Common {
             Mock Get-CimInstance {@([pscustomobject]@{Name='fixture-service';State='Stop Pending';ProcessId=991231;PathName='C:\Fixture\helper.exe'})}
             Mock Invoke-PCNative {}
+            Mock Get-Service {$c=[pscustomobject]@{};$c|Add-Member ScriptMethod WaitForStatus {param($state,$timeout) $state|Should -Be Stopped};$c}
             Stop-PCClientService ([pscustomobject]@{name='fixture-service';pid=991231;path='C:\Fixture\helper.exe'})
             Should -Invoke Invoke-PCNative -Times 0
         }

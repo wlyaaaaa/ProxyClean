@@ -109,6 +109,14 @@ Describe 'Closing a client preserves its launch broker' {
         InModuleScope ProxyClean.Common {
             Mock Get-PCClientInventory {if($script:restored){[pscustomobject]@{key='clash-verge'}}}
             {Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false}|Should -Throw '*PC_CLIENT_RESTARTED*'
+            Should -Invoke Invoke-PCRepairPlan -Times 0
+        }
+    }
+    It 'ends the GUI before stopping its broker so it cannot respawn the core' {
+        InModuleScope ProxyClean.Common {
+            $script:alive=$true
+            Mock Stop-PCClientService {if($script:alive){throw 'controller still alive'};$script:serviceState='Stopped'}
+            (Invoke-PCClientClose $script:plan -ForceFallback -WaitSeconds 0 -Confirm:$false).status|Should -Be client_closed
         }
     }
     It 'does not probe the real network when connectivity checks are skipped' {
