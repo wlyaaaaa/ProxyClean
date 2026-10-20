@@ -42,7 +42,7 @@ Describe 'Closing a client preserves its launch broker' {
     It 'automatically handles residual processes in the same requested operation' {
         InModuleScope ProxyClean.Common {
             $script:alive=$true
-            $r=Invoke-PCClientClose $script:plan -ForceFallback -WaitSeconds 0 -Confirm:$false
+            $r=Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false
             $r.status|Should -Be client_closed
             Should -Invoke Stop-Process -Times 1 -ParameterFilter {$Id -eq 882311 -and $Force}
             Should -Invoke Restore-PCClientService -Times 1
@@ -50,13 +50,14 @@ Describe 'Closing a client preserves its launch broker' {
     }
     It 'does not force a client that already exited gracefully' {
         InModuleScope ProxyClean.Common {
-            [void](Invoke-PCClientClose $script:plan -ForceFallback -WaitSeconds 0 -Confirm:$false)
+            [void](Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false)
             Should -Invoke Stop-Process -Times 0
         }
     }
     It 'restores the broker when original processes refuse to exit' {
         InModuleScope ProxyClean.Common {
             $script:alive=$true
+            Mock Stop-Process {}
             (Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false).status|Should -Be client_still_running
             Should -Invoke Restore-PCClientService -Times 1
             Should -Invoke Invoke-PCRepairPlan -Times 0
@@ -74,6 +75,13 @@ Describe 'Closing a client preserves its launch broker' {
             Mock Invoke-PCRepairPlan {throw 'fixture interrupted repair'}
             {Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false}|Should -Throw '*interrupted repair*'
             Should -Invoke Restore-PCClientService -Times 1
+        }
+    }
+    It 'restores the broker even when the progress callback fails during recovery' {
+        InModuleScope ProxyClean.Common {
+            {Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false -Progress {param($Stage,$Message)if($Stage -in @('verify','service_restore')){throw 'fixture progress unavailable'}}}|Should -Throw '*progress unavailable*'
+            Should -Invoke Restore-PCClientService -Times 1
+            $script:serviceState|Should -Be Running
         }
     }
     It 'recovers a stop request that took effect before it reported failure' {
@@ -116,7 +124,7 @@ Describe 'Closing a client preserves its launch broker' {
         InModuleScope ProxyClean.Common {
             $script:alive=$true
             Mock Stop-PCClientService {if($script:alive){throw 'controller still alive'};$script:serviceState='Stopped'}
-            (Invoke-PCClientClose $script:plan -ForceFallback -WaitSeconds 0 -Confirm:$false).status|Should -Be client_closed
+            (Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false).status|Should -Be client_closed
         }
     }
     It 'does not probe the real network when connectivity checks are skipped' {

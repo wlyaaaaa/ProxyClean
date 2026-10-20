@@ -150,9 +150,10 @@ Describe 'Endpoint safety is revalidated immediately before effects' {
 Describe 'GUI and CLI share the same controlled workflow' {
     BeforeEach {
         $s=New-WorkflowSnapshot
-        InModuleScope ProxyClean.Common -Parameters @{Snapshot=$s} {
-            param($Snapshot)
-            $script:wfSnapshot=$Snapshot
+        InModuleScope ProxyClean.Common -Parameters @{Snapshot=$s;StagePath=(Join-Path $TestDrive 'workflow-stage.json')} {
+            param($Snapshot,$StagePath)
+            $script:wfSnapshot=$Snapshot;$script:stageFixturePath=$StagePath
+            Mock Get-PCStagePath {$script:stageFixturePath}
             Mock Get-PCSnapshot {Write-PCProgress $Progress 'fixture' '正在检查测试设置…';$script:wfSnapshot}
             Mock Get-PCUndoSummary {[pscustomobject]@{available=$false;phase='none'}}
             Mock Invoke-PCRepairPlan {[pscustomobject]@{status='applied';changed=1}}
@@ -251,8 +252,8 @@ Describe 'GUI and CLI share the same controlled workflow' {
     }
 }
 Describe 'Double-click entries cannot silently execute network changes' {
-    It 'routes legacy <Action> into a non-elevated preview-first GUI' -ForEach @(
-        @{Action='Control'},@{Action='Clean'},@{Action='Direct'},@{Action='Status'},@{Action='StopPort'},@{Action='WifiSoft'},@{Action='WifiReset'},@{Action='IPv6Toggle'},@{Action='IPv6Status'}
+    It 'routes <Action> into a non-elevated preview-first GUI' -ForEach @(
+        @{Action='Control'},@{Action='Clean'},@{Action='Direct'},@{Action='StopPort'},@{Action='WifiSoft'},@{Action='WifiReset'}
     ) {
         $r=(& (Join-Path $script:root 'Launch-ProxyClean.ps1') -Action $Action -PreviewLaunch)|ConvertFrom-Json
         $r.elevate|Should -BeFalse;$r.side_effects|Should -BeFalse;$r.preview_first|Should -BeTrue
@@ -260,20 +261,10 @@ Describe 'Double-click entries cannot silently execute network changes' {
         $r.arguments|Should -Contain '-STA'
         $r.arguments|Should -Not -Contain '-NoExit'
     }
-    It 'preserves exact port/client and same-user constraints across the launcher' {
-        $r=(& (Join-Path $script:root 'Launch-ProxyClean.ps1') -Action StopPort -Port 34567 -ExpectedClient ClashVerge -ExpectedSid 'fixture-sid' -PreviewLaunch)|ConvertFrom-Json
-        $r.arguments|Should -Contain '34567';$r.arguments|Should -Contain 'ClashVerge';$r.arguments|Should -Contain 'fixture-sid'
+    It 'preserves exact port and same-user constraints across the launcher' {
+        $r=(& (Join-Path $script:root 'Launch-ProxyClean.ps1') -Action StopPort -Port 34567 -ExpectedSid 'fixture-sid' -PreviewLaunch)|ConvertFrom-Json
+        $r.arguments|Should -Contain '34567';$r.arguments|Should -Contain 'fixture-sid'
         $r.argument_line|Should -Match '"[^\"]*ControlCenter.ps1"'
-    }
-    It 'does not trust a legacy port when a different client has claimed it' {
-        $plan=[pscustomobject]@{processes=@([pscustomobject]@{name='fixture-unrelated'})}
-        {Assert-PCExpectedClient $plan ClashVerge}|Should -Throw '*PC_LEGACY_CLIENT_CHANGED*'
-        {Assert-PCExpectedClient $plan Any}|Should -Not -Throw
-    }
-    It 'recognizes the intended legacy process without adding other process names' {
-        $plan=[pscustomobject]@{processes=@([pscustomobject]@{name='verge-mihomo'})}
-        {Assert-PCExpectedClient $plan ClashVerge}|Should -Not -Throw
-        {Assert-PCExpectedClient $plan FlyingBird}|Should -Throw '*PC_LEGACY_CLIENT_CHANGED*'
     }
 }
 Describe 'Final audit regression cases' {
@@ -315,4 +306,40 @@ Describe 'Final audit regression cases' {
             Should -Invoke Set-PCResourceValue -Times 0
         }
     }
+}
+
+Describe 'Mutation stages survive interruption without storing diagnostic data' {
+    BeforeEach { InModuleScope ProxyClean.Common -Parameters @{Path=(Join-Path $TestDrive 'last-close-stage.json')} {
+        param($Path)
+        $script:stageFixturePath=$Path
+        Mock Get-PCStagePath {$script:stageFixturePath};Mock Enter-PCLock {[Threading.Mutex]::new($true)}
+        Mock Invoke-PCClientClose {Write-PCProgress $Progress 'service_stop' 'fixture-private-message';[pscustomobject]@{status='client_closed'}}
+    } }
+    It 'persists each stage before delivering progress and marks a completed workflow done' { InModuleScope ProxyClean.Common {
+        $seen=[Collections.Generic.List[object]]::new();$stagePath=Get-PCStagePath
+        $callback={param($Stage,$Message)$seen.Add(([IO.File]::ReadAllText($stagePath)|ConvertFrom-Json))}.GetNewClosure()
+        (Invoke-PCWorkflow Disconnect -Plan @{} -Progress $callback -Confirm:$false).status|Should -Be client_closed
+        $seen[-1].stage|Should -Be service_stop;@($seen[-1].PSObject.Properties.Name).Count|Should -Be 2
+        $text=[IO.File]::ReadAllText($stagePath);$text|Should -Match '\.\d{3}Z';$text|Should -Not -Match 'fixture-private-message'
+        ($text|ConvertFrom-Json).stage|Should -Be done
+    } }
+    It 'preserves an interrupted stage during read-only work, WhatIf and a repair without changes' { InModuleScope ProxyClean.Common {
+        $prior='{"stage":"service_stop","time":"2026-10-20T08:00:00.123Z"}';[IO.File]::WriteAllText((Get-PCStagePath),$prior)
+        Mock Get-PCIPv6Snapshot {@()};Mock Invoke-PCRepairPlan {[pscustomobject]@{status='no_changes'}}
+        [void](Invoke-PCWorkflow IPv6Status);[void](Invoke-PCWorkflow Disconnect -Plan @{} -WhatIf)
+        [void](Invoke-PCWorkflow Repair -Plan ([pscustomobject]@{steps=@()}) -SkipConnectivityChecks -Confirm:$false)
+        [IO.File]::ReadAllText((Get-PCStagePath))|Should -Be $prior
+        $notice=Get-PCInterruptedStageNotice
+        $notice|Should -Match '正在停止辅助服务';$notice|Should -Match '16:00:00.123';$notice|Should -Match '不证明'
+    } }
+    It 'marks an ordinary failure done without reporting close success' { InModuleScope ProxyClean.Common {
+        Mock Invoke-PCClientClose {Write-PCProgress $Progress 'service_restore' 'fixture';throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
+        (Invoke-PCWorkflow Disconnect -Plan @{} -Confirm:$false).status|Should -Be failed
+        ([IO.File]::ReadAllText((Get-PCStagePath))|ConvertFrom-Json).stage|Should -Be done;Get-PCInterruptedStageNotice|Should -BeNullOrEmpty
+    } }
+    It 'keeps a recording I/O failure from interrupting the client workflow' { InModuleScope ProxyClean.Common {
+        Mock Get-PCStagePath {Split-Path -Parent $script:stageFixturePath}
+        (Invoke-PCWorkflow Disconnect -Plan @{} -Confirm:$false -WarningAction Stop 3>$null).status|Should -Be client_closed
+        $script:PCStageRecording|Should -BeFalse;Should -Invoke Invoke-PCClientClose -Times 1
+    } }
 }

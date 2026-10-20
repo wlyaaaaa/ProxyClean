@@ -153,7 +153,7 @@ Describe 'All selected client ports are one reversible settings operation' {
         }
     }
 }
-Describe 'Normal close, forced close and partial results stay separate' {
+Describe 'One-click close handles verified residuals and reports partial results' {
     BeforeEach {
         $s=New-ClientSnapshot;$s.systemProxy.enabled=$false;$s.systemProxy.server=''
         InModuleScope ProxyClean.Common -Parameters @{Snapshot=$s} {
@@ -176,7 +176,7 @@ Describe 'Normal close, forced close and partial results stay separate' {
             Mock Get-CimInstance {@()}
         }
     }
-    It 'does not force-kill in the normal-close path' {
+    It 'does not terminate a client that already exited normally' {
         InModuleScope ProxyClean.Common {
             $r=Invoke-PCClientClose $script:clientPlan -WaitSeconds 0 -Confirm:$false
             $r.status|Should -Be client_closed
@@ -186,21 +186,25 @@ Describe 'Normal close, forced close and partial results stay separate' {
             Should -Invoke Test-PCConnectivity -Times 1
         }
     }
-    It 'requires a separate force request before terminating an exact process' {
+    It 'terminates only the original residual process after the normal-exit timeout' {
         InModuleScope ProxyClean.Common {
-            $script:identityCalls=0
-            Mock Test-PCClientProcess {$script:identityCalls++;$script:identityCalls -le 2}
-            $r=Invoke-PCClientClose $script:clientPlan -Force -WaitSeconds 0 -Confirm:$false
+            $script:residualAlive=$true
+            Mock Test-PCClientProcess {$script:residualAlive}
+            Mock Wait-PCClientExit {param($Plan,$WaitSeconds) @($Plan.members|Where-Object {Test-PCClientProcess $_})}
+            Mock Stop-Process {$script:residualAlive=$false}
+            $r=Invoke-PCClientClose $script:clientPlan -WaitSeconds 4 -Confirm:$false
             $r.status|Should -Be client_closed
+            Should -Invoke Wait-PCClientExit -Times 1 -ParameterFilter {$WaitSeconds -eq 4}
             Should -Invoke Stop-Process -Times 1 -ParameterFilter {$Id -eq 991231 -and $Force}
         }
     }
-    It 'keeps original port scope when normal closing leaves a GUI running' {
+    It 'keeps original port scope when termination leaves the original process running' {
         InModuleScope ProxyClean.Common {
             Mock Test-PCClientProcess {$true}
             $r=Invoke-PCClientClose $script:clientPlan -WaitSeconds 0 -Confirm:$false
             $r.status|Should -Be client_still_running;$r.previous_plan.ports.Count|Should -Be 2
-            Should -Invoke Stop-Process -Times 0;Should -Invoke Invoke-PCRepairPlan -Times 0
+            $r.force_attempted|Should -BeTrue
+            Should -Invoke Stop-Process -Times 1;Should -Invoke Invoke-PCRepairPlan -Times 0
         }
     }
     It 'does not clear settings after an automatically restarted client appears' {

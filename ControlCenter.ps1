@@ -1,12 +1,12 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param([switch]$SelfTest,[switch]$AsJson,[switch]$SmokeTest,
-    [ValidateSet('Control','Clean','Direct','Status','WifiSoft','WifiReset','IPv6Toggle','IPv6Status','StopPort','Undo','IPv6Enable','IPv6Disable','FlushDns','Disconnect')][string]$InitialAction='Control',
-    [ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[string]$ClientKey,[string]$ExpectedSid,[string]$ExpectedClientInstance,[switch]$ResumeDisconnect,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any')
+    [ValidateSet('Control','Clean','Direct','WifiSoft','WifiReset','StopPort','Undo','IPv6Enable','IPv6Disable','FlushDns','Disconnect')][string]$InitialAction='Control',
+    [ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[string]$ClientKey,[string]$ExpectedSid,[string]$ExpectedClientInstance,[switch]$ResumeDisconnect)
 $ErrorActionPreference='Stop'
 
 $window=$null;$maintenance=$null;$detailsWindow=$null
-$script:pc=@{ui=@{};job=$null;inspection=$null;pending=$null;intent='Inspect';copy=$null;closing=$false;ticks=0;admin=$false;initial=$false;lastMessage='';direct=$false;resumeAction=$null;legacyClient=$ExpectedClient;clientKey=$ClientKey;disconnectRequested=[bool]$ResumeDisconnect;clientInstance=$ExpectedClientInstance;elevationAttempted=[bool]$ResumeDisconnect;home=$false;maintenanceMode=$false;clients=@()}
+$script:pc=@{ui=@{};job=$null;inspection=$null;pending=$null;intent='Inspect';copy=$null;closing=$false;ticks=0;admin=$false;initial=$false;lastMessage='';direct=$false;resumeAction=$null;clientKey=$ClientKey;disconnectRequested=[bool]$ResumeDisconnect;clientInstance=$ExpectedClientInstance;elevationAttempted=[bool]$ResumeDisconnect;home=$false;maintenanceMode=$false;clients=@()}
 function Set-PCScreen {
     param([string]$Title,[string]$Message,[string]$Primary='返回首页',[string]$Intent='Home',[string]$Tone='good',[object[]]$Actions=@())
     $pc.home=$false
@@ -54,7 +54,7 @@ function Start-PCWork {
     $pc.home=$false;$pc.ui.DisconnectButton.Visibility='Collapsed';$pc.ui.ClientPickerPanel.Visibility='Collapsed'
     $pc.ui.HomeButton.Visibility='Collapsed';$pc.ui.UndoButton.Visibility='Collapsed'
     $pc.resumeAction=switch($Action){
-        {$_ -in @('DisconnectPreview','Disconnect','DisconnectForce')}{'Disconnect'}
+        {$_ -in @('DisconnectPreview','Disconnect')}{'Disconnect'}
         'Repair'{if($pc.direct){'Direct'}else{'Clean'}}
         {$_ -in @('Stop','StopPreview')}{'StopPort'}
         'Inspect'{if($Options.Direct){'Direct'}else{'Control'}}
@@ -123,7 +123,7 @@ function Continue-PCDisconnect {
 }
 function Get-PCElevationOptions {
     param([string]$Action='Control')
-    $launch=@{Action='Control';Elevated=$true;InitialAction=$Action;ExpectedSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;ExpectedClient=$pc.legacyClient}
+    $launch=@{Action='Control';Elevated=$true;InitialAction=$Action;ExpectedSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
     [int]$selectedPort=0
     if([int]::TryParse($pc.ui.PortInput.Text,[ref]$selectedPort) -and $selectedPort -ge 1 -and $selectedPort -le 65535){$launch.Port=$selectedPort}
     if($pc.ui.AdapterCombo.SelectedItem -and $pc.ui.AdapterCombo.SelectedItem.name){$launch.InterfaceAlias=[string]$pc.ui.AdapterCombo.SelectedItem.name}
@@ -292,7 +292,7 @@ function Invoke-PCPrimary {
             if(-not $selected){$pc.ui.Explanation.Text='请先选择要关闭的客户端。其他客户端会保留。';return}
             Start-PCDisconnect -SelectedClient $selected.key
         }
-        {$_ -in @('Disconnect','DisconnectForce')}{
+        'Disconnect'{
             if(-not $pc.pending){Start-PCDisconnect -SelectedClient $pc.clientKey;return}
             Start-PCWork $pc.intent @{Plan=$pc.pending}
         }
@@ -337,19 +337,16 @@ function Show-PCInitialAction {
     switch($Action){
         'Disconnect'{Start-PCWork DisconnectPreview @{ClientKey=$pc.clientKey;ExpectedClientInstance=$pc.clientInstance}}
         'Clean'{Start-PCWork Diagnose}
-        'StopPort'{if($Port){Start-PCWork StopPreview @{Port=$Port;ExpectedClient=$pc.legacyClient}}}
-        'IPv6Status'{Start-PCWork IPv6Status}
-        'Status'{$detailsWindow.Owner=$window;[void]$detailsWindow.ShowDialog()}
+        'StopPort'{if($Port){Start-PCWork StopPreview @{Port=$Port}}}
         'Undo'{
             $pc.ui.UndoButton.Visibility='Collapsed'
             if($pc.inspection.undo.available){Set-PCScreen '准备恢复上次修改' '会先确认恢复范围，只恢复仍属于上次操作的设置。不会重新启动已结束的程序。' '恢复上次修改' 'Undo'}
             else{Set-PCScreen '没有可恢复的修改' '尚无修改记录，或上次修改已经恢复。'}
         }
         'FlushDns'{Set-PCScreen '准备刷新域名缓存' '只刷新缓存，不更换 DNS 服务器。确认后才执行。' '刷新域名缓存…' 'FlushDns'}
-        {$_ -in @('WifiSoft','WifiReset','IPv6Enable','IPv6Disable','IPv6Toggle')}{
-            $labels=@{WifiSoft='刷新连接';WifiReset='重启网卡';IPv6Enable='启用 IPv6';IPv6Disable='禁用 IPv6';IPv6Toggle='选择 IPv6 操作'}
-            if($Action -eq 'IPv6Toggle'){Set-PCScreen $labels[$Action] '请在下方选择物理网卡，再点击“启用 IPv6”或“禁用 IPv6”。确认前不会修改设置。' '查看 IPv6 状态' 'IPv6Status'}
-            else{Set-PCScreen ('准备'+$labels[$Action]) '请在下方选择物理网卡，再点击对应操作。连接可能暂时中断，确认前不会修改设置。' ($labels[$Action]+'…') $Action 'warning'}
+        {$_ -in @('WifiSoft','WifiReset','IPv6Enable','IPv6Disable')}{
+            $labels=@{WifiSoft='刷新连接';WifiReset='重启网卡';IPv6Enable='启用 IPv6';IPv6Disable='禁用 IPv6'}
+            Set-PCScreen ('准备'+$labels[$Action]) '请在下方选择物理网卡，再点击对应操作。连接可能暂时中断，确认前不会修改设置。' ($labels[$Action]+'…') $Action 'warning'
             $pc.ui.AdvancedExpander.IsExpanded=$true
             $pc.ui.AdapterCombo.BringIntoView();Open-PCMaintenance
         }
@@ -388,11 +385,11 @@ try{
     $pc.ui.ConnectivityButton.Add_Click({Start-PCWork Connectivity})
     $pc.ui.ExitButton.Add_Click({if(Confirm-PCAction '将请求 ipify 的公网 IP 查询服务，并比较默认路径与可识别的本机代理路径。只显示匿名分组，不修改设置。继续？' '比较联网出口'){Start-PCWork ExitProbe}})
     $pc.ui.ClientCombo.Add_SelectionChanged({if($pc.ui.ClientCombo.SelectedItem -and $pc.ui.ClientCombo.SelectedItem.port){$pc.ui.PortInput.Text=[string]$pc.ui.ClientCombo.SelectedItem.port}})
-    $pc.ui.PortInput.Add_TextChanged({$pc.legacyClient='Any';if($pc.intent -eq 'Stop'){$pc.pending=$null;Set-PCScreen '端口已改变，请重新查看结束范围' '新的端口尚未确认，本次不会结束任何程序。' -Tone warning}})
+    $pc.ui.PortInput.Add_TextChanged({if($pc.intent -eq 'Stop'){$pc.pending=$null;Set-PCScreen '端口已改变，请重新查看结束范围' '新的端口尚未确认，本次不会结束任何程序。' -Tone warning}})
     $pc.ui.StopPreviewButton.Add_Click({
         [int]$selectedPort=0
         if(-not [int]::TryParse($pc.ui.PortInput.Text,[ref]$selectedPort) -or $selectedPort -lt 1 -or $selectedPort -gt 65535){[void][Windows.MessageBox]::Show($window,'请选择程序，或输入 1 到 65535 之间的端口。','请选择端口','OK','Information');return}
-        Start-PCWork StopPreview @{Port=$selectedPort;ExpectedClient=$pc.legacyClient}
+        Start-PCWork StopPreview @{Port=$selectedPort}
     })
     $pc.ui.WifiSoftButton.Add_Click({Invoke-PCAdapterAction WifiSoft '刷新连接'})
     $pc.ui.WifiResetButton.Add_Click({Invoke-PCAdapterAction WifiReset '重启网卡'})

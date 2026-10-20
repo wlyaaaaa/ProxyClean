@@ -22,7 +22,7 @@ Describe 'Guided GUI handoff keeps user intent without executing it' {
         $adapter|Add-Member -MemberType ScriptMethod -Name BringIntoView -Value {$this.broughtIntoView=$true}
         $details=[pscustomobject]@{IsExpanded=$false;broughtIntoView=$false}
         $details|Add-Member -MemberType ScriptMethod -Name BringIntoView -Value {$this.broughtIntoView=$true}
-        $script:pc=@{admin=$false;legacyClient='ClashVerge';intent='Inspect';resumeAction=$null;pending=$null;direct=$false;
+        $script:pc=@{admin=$false;intent='Inspect';resumeAction=$null;pending=$null;direct=$false;
             ui=@{PortInput=[pscustomobject]@{Text='34567'};AdapterCombo=$adapter;DetailsExpander=$details;AdvancedExpander=[pscustomobject]@{IsExpanded=$false};UndoButton=[pscustomobject]@{Visibility='Collapsed'}};
             inspection=[pscustomobject]@{view=[pscustomobject]@{blocked=$false};undo=[pscustomobject]@{available=$true}}}
         $script:Port=34567
@@ -32,11 +32,10 @@ Describe 'Guided GUI handoff keeps user intent without executing it' {
         Mock Set-PCScreen {}
         Mock Get-PCUndoSummary {[pscustomobject]@{available=$true;resources=@('WinInet:ProxyEnable')}}
     }
-    It 'preserves the selected action, port, client, adapter and Windows identity' {
+    It 'preserves the selected action, port, adapter and Windows identity' {
         $options=Get-PCElevationOptions StopPort
         $options.Action|Should -Be Control
         $options.InitialAction|Should -Be StopPort
-        $options.ExpectedClient|Should -Be ClashVerge
         $options.Port|Should -Be 34567
         $options.InterfaceAlias|Should -Be 'Fixture Wi-Fi'
         $options.ExpectedSid|Should -Be ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
@@ -106,9 +105,9 @@ Describe 'Guided GUI handoff keeps user intent without executing it' {
         Should -Invoke Set-PCScreen -Times 1 -ParameterFilter {$Intent -eq $expectedAction}
         Should -Invoke Start-PCWork -Times 0
     }
-    It 'rebuilds a read-only stop preview with the original expected client' {
+    It 'rebuilds a read-only stop preview for the selected port' {
         Show-PCInitialAction StopPort
-        Should -Invoke Start-PCWork -Times 1 -ParameterFilter {$Action -eq 'StopPreview' -and $Options.Port -eq 34567 -and $Options.ExpectedClient -eq 'ClashVerge'}
+        Should -Invoke Start-PCWork -Times 1 -ParameterFilter {$Action -eq 'StopPreview' -and $Options.Port -eq 34567}
     }
     It 'never overrides an unfinished recovery with a requested adapter action' {
         $script:pc.inspection.view.blocked=$true
@@ -145,7 +144,7 @@ Describe 'One-click close executes real GUI handlers against isolated worker moc
         function Add-PCLog {}
     }
     BeforeEach {
-        $script:pc=@{job=$null;pending='stale';clientKey=$null;clientInstance=$null;disconnectRequested=$false;elevationAttempted=$false;admin=$false;legacyClient='Any';resumeAction=$null;
+        $script:pc=@{job=$null;pending='stale';clientKey=$null;clientInstance=$null;disconnectRequested=$false;elevationAttempted=$false;admin=$false;resumeAction=$null;
             home=$false;copy=$null;ui=@{PortInput=[pscustomobject]@{Text=''};AdapterCombo=[pscustomobject]@{SelectedItem=$null};ModeBadge=[pscustomobject]@{Text=''};
                 DisconnectClients=[pscustomobject]@{ItemsSource=@();SelectedIndex=0;SelectedItem=$null};ClientPickerPanel=[pscustomobject]@{Visibility='Collapsed'};
                 CopyButton=[pscustomobject]@{IsEnabled=$false};DetailsText=[pscustomobject]@{Text=''};Headline=[pscustomobject]@{Text=''};Explanation=[pscustomobject]@{Text=''}}}

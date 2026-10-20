@@ -178,7 +178,7 @@ function Invoke-PCIPv6Change {
     }catch{
         $failures=@()
         foreach($item in $changed){try{if($item.enabled){Enable-NetAdapterBinding -Name $item.name -ComponentID ms_tcpip6 -ErrorAction Stop|Out-Null}else{Disable-NetAdapterBinding -Name $item.name -ComponentID ms_tcpip6 -ErrorAction Stop|Out-Null};if([bool](Get-NetAdapterBinding -Name $item.name -ComponentID ms_tcpip6 -ErrorAction Stop).Enabled -ne $item.enabled){throw 'Readback failed'}}catch{$failures+=@($item.name)}}
-        if($failures.Count){throw 'IPv6 change failed and one or more original bindings require recovery. Inspect IPv6-Status.ps1; no full recovery was claimed.'}
+        if($failures.Count){throw 'IPv6 change failed and one or more original bindings require recovery. Open the maintenance window to inspect IPv6 status; no full recovery was claimed.'}
         throw 'IPv6 change failed; this run restored its changed bindings.'
     }
     [pscustomobject]@{status=if($WhatIfPreference){'preview'}else{'binding_verified'};changed=$changed.Count;enabled=$enable;proxy_routing='not_tested';internet_reachability='not_tested'}

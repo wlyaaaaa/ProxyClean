@@ -102,14 +102,13 @@ Describe 'Mocked client shutdown completes real isolated settings writes and und
             }
         }
     }
-    It 'cleans and restores <Label> settings (force=<Force>) without live shutdown' -ForEach @(
-        @{Key='flyingbird';Label='FlyingBird';Force=$false},@{Key='flyingbird';Label='FlyingBird';Force=$true},
-        @{Key='clash-verge';Label='Clash Verge';Force=$false},@{Key='clash-verge';Label='Clash Verge';Force=$true}
+    It 'cleans and restores <Label> settings without live shutdown' -ForEach @(
+        @{Key='flyingbird';Label='FlyingBird'},@{Key='clash-verge';Label='Clash Verge'}
     ) {
-        InModuleScope ProxyClean.Common -Parameters @{Key=$Key;Label=$Label;Force=$Force} {
-            param($Key,$Label,$Force)
+        InModuleScope ProxyClean.Common -Parameters @{Key=$Key;Label=$Label} {
+            param($Key,$Label)
             $plan=[pscustomobject]@{schema='proxyclean.client-close.v1';sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;key=$Key;label=$Label;members=@([pscustomobject]@{pid=991231;name='fixture';path='C:\Fixture\proxy.exe';session=1;start_utc='fixture'});services=@();ports=@(34567);observedUtc='fixture'}
-            $result=Invoke-PCClientClose -Plan $plan -Force:$Force -WaitSeconds 0 -Confirm:$false
+            $result=Invoke-PCClientClose -Plan $plan -WaitSeconds 0 -Confirm:$false
             $result.status|Should -Be client_closed;$result.settings.status|Should -Be applied;$result.settings.changed|Should -Be 2
             (Get-PCRegistryValue WinInet ProxyEnable).value|Should -Be 0
             (Get-PCRegistryValue UserEnv HTTP_PROXY).exists|Should -BeFalse

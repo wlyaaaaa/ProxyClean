@@ -134,7 +134,6 @@ Describe 'Broker restart verification is bounded and precedes cleanup' {
     }
     It 'recognizes the supported alpha core as part of Verge' {
         (Get-PCClientFamily 'verge-mihomo-alpha.exe').key|Should -Be 'clash-verge'
-        {Assert-PCExpectedClient ([pscustomobject]@{processes=@([pscustomobject]@{name='verge-mihomo-alpha'})}) -ExpectedClient ClashVerge}|Should -Not -Throw
     }
     It 'allows a known replacement client to take over the old port without clearing it' {
         InModuleScope ProxyClean.Common {

@@ -167,13 +167,13 @@ function Stop-PCClientService {
 }
 function Invoke-PCClientClose {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
-    param([Parameter(Mandatory)]$Plan,[switch]$Force,[switch]$ForceFallback,[switch]$SkipConnectivityChecks,[scriptblock]$Progress,[ValidateRange(0,10)][int]$WaitSeconds=4)
+    param([Parameter(Mandatory)]$Plan,[switch]$SkipConnectivityChecks,[scriptblock]$Progress,[ValidateRange(0,10)][int]$WaitSeconds=4)
     if($Plan.schema -ne 'proxyclean.client-close.v1'){throw 'Unsupported client close plan.'}
     $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
     if($identity.IsSystem -or $identity.User.Value -ne $Plan.sid){throw 'Use the same intended Windows user, never SYSTEM.'}
-    if(-not $PSCmdlet.ShouldProcess($Plan.label,$(if($Force){'Force-close only the confirmed client'}else{'Request normal client and service shutdown'}))){return [pscustomobject]@{status='preview'}}
+    if(-not $PSCmdlet.ShouldProcess($Plan.label,'Request normal client shutdown and handle verified residual processes')){return [pscustomobject]@{status='preview'}}
     $restore=New-Object 'Collections.Generic.List[object]'
-    $forceAttempted=[bool]$Force
+    $forceAttempted=$false
     $lock=Enter-PCLock
     try{
         $undo=Get-PCUndoSummary
@@ -193,24 +193,21 @@ function Invoke-PCClientClose {
         foreach($member in @($Plan.members)){Request-PCClientWindowClose $member}
         # A window close may only minimize a tray client. Remove its controller
         # before stopping the broker, so it cannot race the service or restart it.
-        if($Force -or $ForceFallback){
-            $controllers=[pscustomobject]@{members=@($Plan.members|Where-Object {Test-PCClientController $_.name})}
-            if($controllers.members.Count){
-                $left=@(Wait-PCClientExit -Plan $controllers -WaitSeconds $(if($Force){0}else{$WaitSeconds}))
-                foreach($member in $left){$forceAttempted=$true;Stop-PCClientProcess $member}
-            }
+        $controllers=[pscustomobject]@{members=@($Plan.members|Where-Object {Test-PCClientController $_.name})}
+        if($controllers.members.Count){
+            $left=@(Wait-PCClientExit -Plan $controllers -WaitSeconds $WaitSeconds)
+            if($left.Count){Write-PCProgress $Progress 'force' ('正在结束你确认的'+$Plan.label+'控制界面残留进程…')}
+            foreach($member in $left){$forceAttempted=$true;Stop-PCClientProcess $member}
         }
         foreach($service in @($Plan.services)){
-            Write-PCProgress $Progress 'service' ('正在停止'+$Plan.label+'的辅助服务…')
+            Write-PCProgress $Progress 'service_stop' ('正在停止'+$Plan.label+'的辅助服务…')
             $current=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
 
             if($current.Count -ne 1 -or [string]$current[0].PathName -cne $service.path){throw 'Service identity changed.'}
             Stop-PCClientService $service
         }
-        if($ForceFallback -and -not $Force){
-            $remaining=@(Wait-PCClientExit -Plan $Plan -WaitSeconds $WaitSeconds)
-            $forceAttempted=$forceAttempted -or $remaining.Count -gt 0
-        }
+        $remaining=@(Wait-PCClientExit -Plan $Plan -WaitSeconds $WaitSeconds)
+        $forceAttempted=$forceAttempted -or $remaining.Count -gt 0
         if($forceAttempted){
             Write-PCProgress $Progress 'force' ('正在结束你确认的'+$Plan.label+'剩余进程…')
             # Close controllers before cores and brokers to reduce respawn races.
@@ -218,6 +215,7 @@ function Invoke-PCClientClose {
             $ordered=@($Plan.members|Sort-Object @{Expression={if($_.name -match '^(?i:FlyingBird|clash-verge|Clash for Windows|tag)$'){0}elseif(Test-PCClientBroker $_.name){2}else{1}}},pid)
             foreach($member in $ordered){Stop-PCClientProcess $member}
         }
+        Write-PCProgress $Progress 'verify' '正在等待原客户端退出，并核对进程与端口状态…'
         $deadline=[DateTimeOffset]::UtcNow.AddSeconds($WaitSeconds)
         do{
             $remaining=@($Plan.members|Where-Object{Test-PCClientProcess $_})
@@ -246,7 +244,7 @@ function Invoke-PCClientClose {
             $journal.steps[0].phase='committed';Save-PCJournal $journal
         }
         foreach($service in @($restore.ToArray())){
-            Write-PCProgress $Progress 'service' ('正在恢复'+$Plan.label+'的启动辅助服务…')
+            Write-PCProgress $Progress 'service_restore' ('正在恢复'+$Plan.label+'的启动辅助服务…')
             try{Restore-PCClientService $service}catch{throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
             [void]$restore.Remove($service)
         }
@@ -264,7 +262,10 @@ function Invoke-PCClientClose {
         }
         if($settings.status -notin @('applied','no_changes')){return [pscustomobject]@{status='client_settings_incomplete';label=$Plan.label;settings=$settings}}
         $dnsCache='not_changed'
-        if(Get-PCValue $Plan 'refresh_dns_cache' $false){$dnsCache=Clear-PCClientDnsCache}
+        if(Get-PCValue $Plan 'refresh_dns_cache' $false){
+            Write-PCProgress $Progress 'dns' '正在刷新客户端退出后的 DNS 缓存…'
+            $dnsCache=Clear-PCClientDnsCache
+        }
         Write-PCProgress $Progress 'connectivity' '正在重新检查代理状态，并测试基础网页连接…'
         $after=ConvertTo-PCPublicSnapshot (Get-PCSnapshot -Progress $Progress)
         $still=@(Get-PCClientInventory -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop))
@@ -288,6 +289,7 @@ function Invoke-PCClientClose {
         $restoreErrors=New-Object 'Collections.Generic.List[string]'
         try{
             foreach($service in $restore){
+                try{Write-PCProgress $Progress 'service_restore' ('正在恢复'+$Plan.label+'的启动辅助服务…')}catch{}
                 try{Restore-PCClientService $service}
                 catch{$restoreErrors.Add($service.name)}
             }

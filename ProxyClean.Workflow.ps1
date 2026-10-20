@@ -1,8 +1,35 @@
 ﻿#Requires -Version 5.1
 # Shared application workflow. UI callbacks receive Chinese messages, never preimages.
+$script:PCStageRecording=$false
+function Get-PCStagePath {Join-Path $env:LOCALAPPDATA 'ProxyClean\last-close-stage.json'}
 function Write-PCProgress {
     param([scriptblock]$Progress,[string]$Stage,[string]$Message)
+    if($script:PCStageRecording){
+        try{
+            $path=Get-PCStagePath
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+            $record=[ordered]@{stage=$Stage;time=[DateTimeOffset]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")}
+            $bytes=[Text.Encoding]::UTF8.GetBytes(($record|ConvertTo-Json -Compress))
+            $stream=[IO.FileStream]::new($path,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
+            try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+        }catch{
+            # Diagnostic I/O must not interrupt the client's service restoration.
+            Write-Warning '本次阶段记录未能落盘；操作结果仍按实际核验报告，事后可能无法确定中断步骤。' -WarningAction Continue
+        }
+    }
     if($Progress){& $Progress $Stage $Message|Out-Null}
+}
+function Get-PCInterruptedStageNotice {
+    try{
+        $path=Get-PCStagePath
+        if(-not(Test-Path -LiteralPath $path)){return ''}
+        $record=[IO.File]::ReadAllText($path)|ConvertFrom-Json
+        if($record.stage -eq 'done'){return ''}
+        $labels=@{close='正在请求客户端退出';service_stop='正在停止辅助服务';service_restore='正在恢复辅助服务';force='正在处理残留进程';verify='正在复查退出或设置';connectivity='正在检查联网';revalidate='正在复查修改条件';backup='正在保存恢复记录';apply='正在修改设置';rollback='正在恢复本次修改';notify='正在通知系统';dns='正在刷新 DNS 缓存';listeners='正在读取监听状态';network='正在读取网卡与路由';settings='正在读取代理设置';git='正在读取 Git 设置';consumers='正在读取应用代理状态'}
+        $label=if($labels.ContainsKey([string]$record.stage)){$labels[[string]$record.stage]}else{'未识别的步骤'}
+        $time=([DateTimeOffset]$record.time).ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd HH:mm:ss.fff')
+        return ('上次关闭或修复停在：'+$label+'（北京时间 '+$time+'）。尚无结束标记，也可能仍在进行。此记录只说明当时正在执行的步骤，不证明它是卡死原因；内核损坏原因仍需结合转储判断。')
+    }catch{return '上次阶段记录未能读取，无法确认执行到了哪一步。'}
 }
 function Get-PCStepLabel {
     param($Step)
@@ -50,7 +77,6 @@ function ConvertTo-PCFriendlyError {
         'Service identity changed|Process identity changed|Process identity unavailable'{return '所选程序或服务已变化，本次没有继续操作。请重新检查后再确认。'}
         'PC_PROXY_SERVER_CHANGED|Configuration changed|Git proxy changed|Route changed|identity changed'{return '设置在检查后发生了变化。本次已停止，请重新检查后再操作。'}
         'PC_PROXY_RESTARTED|adapter recovered'{return '代理或网卡已经恢复运行，本次不再清理。请重新检查。'}
-        'PC_LEGACY_CLIENT_CHANGED'{return '旧快捷方式的端口已属于其他程序，未选择任何结束操作。请重新选择实际程序。'}
         'PC_LISTENER_UNKNOWN'{return '暂时无法确认代理是否仍在运行。本次没有继续清理，请重新检查。'}
         'unfinished cleanup'{return '上次修改尚未恢复完成。请先点击“恢复上次修改”。'}
         'Another ProxyClean'{return '另一个 ProxyClean 窗口正在修改设置。完成后再试。'}
@@ -92,6 +118,8 @@ function Get-PCCheckView {
 function Format-PCInspection {
     param([Parameter(Mandatory)]$Snapshot)
     $lines=New-Object 'Collections.Generic.List[string]'
+    $interrupted=Get-PCInterruptedStageNotice
+    if($interrupted){$lines.Add($interrupted);$lines.Add('')}
     $labels=@{listeners='本机代理进程';adapters='网卡';routes='默认网络路由';wininet='Windows 手动代理';environment='终端代理变量';git='Git 代理';winhttp='Windows 服务代理';docker='Docker 代理'}
     $states=@{observed='已检查';unknown='未能确认';not_installed='未安装';not_inspected='未检查'}
     foreach($item in $Snapshot.availability.PSObject.Properties){
@@ -126,11 +154,12 @@ function Format-PCInspection {
 }
 function Invoke-PCWorkflow {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Medium')]
-    param([ValidateSet('Inspect','Diagnose','DisconnectPreview','Disconnect','DisconnectForce','Repair','Undo','Connectivity','StopPreview','Stop','WifiSoft','WifiReset','IPv6Status','IPv6Enable','IPv6Disable','ExitProbe','FlushDns')][string]$Action='Inspect',
-        $Plan,[string]$ClientKey,[string]$ExpectedClientInstance,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,[ValidateSet('Any','TAG','ClashVerge','FlyingBird')][string]$ExpectedClient='Any',
+    param([ValidateSet('Inspect','Diagnose','DisconnectPreview','Disconnect','Repair','Undo','Connectivity','StopPreview','Stop','WifiSoft','WifiReset','IPv6Status','IPv6Enable','IPv6Disable','ExitProbe','FlushDns')][string]$Action='Inspect',
+        $Plan,[string]$ClientKey,[string]$ExpectedClientInstance,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,
         [switch]$SkipConnectivityChecks,[scriptblock]$Progress)
+    $stageLock=$null
     try{
-        if($Action -in @('Disconnect','DisconnectForce','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
+        if($Action -in @('Disconnect','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
             -not $PSCmdlet.ShouldProcess('选定的设置或程序','执行已确认的操作')){
             return [pscustomobject]@{action=$Action;status='preview'}
         }
@@ -146,9 +175,11 @@ function Invoke-PCWorkflow {
                 return [pscustomobject]@{status='diagnosed';inspection=$inspection;connectivity=$probe}
             }
             'DisconnectPreview'{return Get-PCClientClosePreview -ClientKey $ClientKey -PreviousPlan $Plan -ExpectedClientInstance $ExpectedClientInstance -Progress $Progress}
-            {$_ -in @('Disconnect','DisconnectForce')}{
+            'Disconnect'{
                 if(-not $Plan){throw 'Please preview the client first.'}
-                return Invoke-PCClientClose -Plan $Plan -Force:($Action -eq 'DisconnectForce') -ForceFallback:($Action -eq 'Disconnect') -SkipConnectivityChecks:$SkipConnectivityChecks -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
+                $stageLock=Enter-PCLock;$script:PCStageRecording=$true
+                Write-PCProgress $Progress 'close' '正在准备关闭已确认的客户端…'
+                return Invoke-PCClientClose -Plan $Plan -SkipConnectivityChecks:$SkipConnectivityChecks -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
             }
             'Inspect'{
                 $snapshot=Get-PCSnapshot -Progress $Progress
@@ -168,6 +199,7 @@ function Invoke-PCWorkflow {
             }
             'Repair'{
                 if(-not $Plan){$Plan=Get-PCRepairPlan -Snapshot (Get-PCSnapshot -Progress $Progress) -Direct:$Direct}
+                if(@($Plan.steps).Count){$stageLock=Enter-PCLock;$script:PCStageRecording=$true}
                 $applied=Invoke-PCRepairPlan -Plan $Plan -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
                 $notification=$null;$probe=[pscustomobject]@{status='not_tested'}
                 if($applied.status -eq 'applied'){
@@ -178,7 +210,6 @@ function Invoke-PCWorkflow {
                     Write-PCProgress $Progress 'connectivity' '正在测试网页连接，结果与设置修复分别报告…'
                     $probe=Test-PCConnectivity
                 }
-                Write-PCProgress $Progress 'done' '本次操作已结束，请查看上方结果。'
                 return [pscustomobject]@{schema='proxyclean.cleanup-result.v1';action=$Action;status=$applied.status;plan=ConvertTo-PCPublicPlan $Plan;configuration=$applied;notification=$notification;dns_cache='not_changed';connectivity=$probe;all_applications_direct='not_proven'}
             }
             'Undo'{
@@ -196,7 +227,6 @@ function Invoke-PCWorkflow {
                 if(-not $Port){throw 'Please select a port.'}
                 Write-PCProgress $Progress 'process' '正在确认这个端口由哪些程序占用…'
                 $plan=Get-PCStopPlan -Port $Port
-                Assert-PCExpectedClient -Plan $plan -ExpectedClient $ExpectedClient
                 return [pscustomobject]@{action=$Action;status='stop_preview';plan=$plan;public=ConvertTo-PCPublicStopPlan $plan}
             }
             'Stop'{
@@ -239,12 +269,10 @@ function Invoke-PCWorkflow {
     }catch{
         $cancel=[string]$_.Exception.Message -match 'PC_CANCELLED'
         return [pscustomobject]@{action=$Action;status=if($cancel){'cancelled'}else{'failed'};message=ConvertTo-PCFriendlyError $_;error_type=$_.Exception.GetType().FullName}
+    }finally{
+        if($stageLock){
+            try{Write-PCProgress $null 'done' ''}
+            finally{$script:PCStageRecording=$false;try{$stageLock.ReleaseMutex()}finally{$stageLock.Dispose()}}
+        }
     }
-}
-
-function Assert-PCExpectedClient {
-    param($Plan,[string]$ExpectedClient='Any')
-    if($ExpectedClient -eq 'Any'){return}
-    $pattern=switch($ExpectedClient){'TAG'{'(?i)^(?:tag|mihomo-tag|tag-mihomo)$'}'ClashVerge'{'(?i)^(?:clash-verge|verge-mihomo(?:-alpha)?)$'}'FlyingBird'{'(?i)^FlyingBird(?:Core|HelperService)?$'}default{throw 'PC_LEGACY_CLIENT_CHANGED'}}
-    if(@($Plan.processes|Where-Object{$_.name -notmatch $pattern}).Count){throw 'PC_LEGACY_CLIENT_CHANGED'}
 }
