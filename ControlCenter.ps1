@@ -124,6 +124,7 @@ function Continue-PCDisconnect {
 function Get-PCElevationOptions {
     param([string]$Action='Control')
     $launch=@{Action='Control';Elevated=$true;InitialAction=$Action;ExpectedSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
+    if($Action -in @('IPv6Status','Connectivity','Diagnose','ExitProbe')){$launch.InitialAction='Control'}
     [int]$selectedPort=0
     if([int]::TryParse($pc.ui.PortInput.Text,[ref]$selectedPort) -and $selectedPort -ge 1 -and $selectedPort -le 65535){$launch.Port=$selectedPort}
     if($pc.ui.AdapterCombo.SelectedItem -and $pc.ui.AdapterCombo.SelectedItem.name){$launch.InterfaceAlias=[string]$pc.ui.AdapterCombo.SelectedItem.name}

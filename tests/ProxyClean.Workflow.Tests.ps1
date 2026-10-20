@@ -192,6 +192,7 @@ Describe 'GUI and CLI share the same controlled workflow' {
             $r=Invoke-PCWorkflow Repair -Plan (Get-PCRepairPlan $script:wfSnapshot) -Progress $callback -SkipConnectivityChecks -Confirm:$false
             $r.status|Should -Be applied;$r.connectivity.status|Should -Be not_tested
             @($messages)|Should -Contain '设置已核验，正在通知 Windows 使用新设置…'
+            $messages[-1]|Should -Be '本次操作已结束。'
             Should -Invoke Test-PCConnectivity -Times 0
             Should -Invoke Invoke-PCNative -Times 0
             $r.dns_cache|Should -Be not_changed
@@ -319,7 +320,8 @@ Describe 'Mutation stages survive interruption without storing diagnostic data' 
         $seen=[Collections.Generic.List[object]]::new();$stagePath=Get-PCStagePath
         $callback={param($Stage,$Message)$seen.Add(([IO.File]::ReadAllText($stagePath)|ConvertFrom-Json))}.GetNewClosure()
         (Invoke-PCWorkflow Disconnect -Plan @{} -Progress $callback -Confirm:$false).status|Should -Be client_closed
-        $seen[-1].stage|Should -Be service_stop;@($seen[-1].PSObject.Properties.Name).Count|Should -Be 2
+        $seen[-2].stage|Should -Be service_stop;$seen[-1].stage|Should -Be done
+        @($seen[-1].PSObject.Properties.Name).Count|Should -Be 2
         $text=[IO.File]::ReadAllText($stagePath);$text|Should -Match '\.\d{3}Z';$text|Should -Not -Match 'fixture-private-message'
         ($text|ConvertFrom-Json).stage|Should -Be done
     } }
@@ -334,7 +336,10 @@ Describe 'Mutation stages survive interruption without storing diagnostic data' 
     } }
     It 'marks an ordinary failure done without reporting close success' { InModuleScope ProxyClean.Common {
         Mock Invoke-PCClientClose {Write-PCProgress $Progress 'service_restore' 'fixture';throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
-        (Invoke-PCWorkflow Disconnect -Plan @{} -Confirm:$false).status|Should -Be failed
+        $messages=[Collections.Generic.List[string]]::new()
+        $callback={param($Stage,$Message)$messages.Add($Message)}.GetNewClosure()
+        (Invoke-PCWorkflow Disconnect -Plan @{} -Progress $callback -Confirm:$false).status|Should -Be failed
+        $messages[-1]|Should -Be '本次操作已结束。'
         ([IO.File]::ReadAllText((Get-PCStagePath))|ConvertFrom-Json).stage|Should -Be done;Get-PCInterruptedStageNotice|Should -BeNullOrEmpty
     } }
     It 'keeps a recording I/O failure from interrupting the client workflow' { InModuleScope ProxyClean.Common {

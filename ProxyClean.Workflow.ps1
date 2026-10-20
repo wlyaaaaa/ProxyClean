@@ -157,6 +157,7 @@ function Invoke-PCWorkflow {
     param([ValidateSet('Inspect','Diagnose','DisconnectPreview','Disconnect','Repair','Undo','Connectivity','StopPreview','Stop','WifiSoft','WifiReset','IPv6Status','IPv6Enable','IPv6Disable','ExitProbe','FlushDns')][string]$Action='Inspect',
         $Plan,[string]$ClientKey,[string]$ExpectedClientInstance,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,
         [switch]$SkipConnectivityChecks,[scriptblock]$Progress)
+    # Disconnect 与 Repair 的内部函数会在同一线程重取同名 Mutex，依赖其可重入性，并各自成对释放。
     $stageLock=$null
     try{
         if($Action -in @('Disconnect','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
@@ -271,7 +272,7 @@ function Invoke-PCWorkflow {
         return [pscustomobject]@{action=$Action;status=if($cancel){'cancelled'}else{'failed'};message=ConvertTo-PCFriendlyError $_;error_type=$_.Exception.GetType().FullName}
     }finally{
         if($stageLock){
-            try{Write-PCProgress $null 'done' ''}
+            try{Write-PCProgress $Progress 'done' '本次操作已结束。'}
             finally{$script:PCStageRecording=$false;try{$stageLock.ReleaseMutex()}finally{$stageLock.Dispose()}}
         }
     }

@@ -46,6 +46,16 @@ Describe 'Guided GUI handoff keeps user intent without executing it' {
         $script:pc.ui.PortInput.Text='999999999999999999999'
         (Get-PCElevationOptions IPv6Enable).ContainsKey('Port')|Should -BeFalse
     }
+    It 'reopens Control when read-only <Action> needs elevation' -ForEach @(
+        @{Action='IPv6Status'},@{Action='Connectivity'},@{Action='Diagnose'},@{Action='ExitProbe'}
+    ) {
+        $options=Get-PCElevationOptions $Action
+        $options.InitialAction|Should -Be Control
+        $result=(& (Join-Path $script:root 'Launch-ProxyClean.ps1') @options -PreviewLaunch)|ConvertFrom-Json
+        $index=[array]::IndexOf($result.arguments,'-InitialAction')
+        $result.arguments[$index+1]|Should -Be Control
+        $result.elevate|Should -BeTrue;$result.side_effects|Should -BeFalse
+    }
     It 'requests the exact adapter action <Action>, never a substituted reset' -ForEach @(
         @{Action='WifiSoft'},@{Action='WifiReset'},@{Action='IPv6Enable'},@{Action='IPv6Disable'}
     ) {
