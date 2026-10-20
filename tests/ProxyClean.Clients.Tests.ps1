@@ -186,16 +186,21 @@ Describe 'One-click close handles verified residuals and reports partial results
             Should -Invoke Test-PCConnectivity -Times 1
         }
     }
-    It 'terminates only the original residual process after the normal-exit timeout' {
-        InModuleScope ProxyClean.Common {
+    It 'routes Disconnect through normal exit and identity-bound residual termination' {
+        InModuleScope ProxyClean.Common -Parameters @{StagePath=(Join-Path $TestDrive 'workflow-client-close-stage.json')} {
+            param($StagePath)
+            $script:clientStagePath=$StagePath
+            Mock Get-PCStagePath {$script:clientStagePath}
             $script:residualAlive=$true
             Mock Test-PCClientProcess {$script:residualAlive}
             Mock Wait-PCClientExit {param($Plan,$WaitSeconds) @($Plan.members|Where-Object {Test-PCClientProcess $_})}
             Mock Stop-Process {$script:residualAlive=$false}
-            $r=Invoke-PCClientClose $script:clientPlan -WaitSeconds 4 -Confirm:$false
+            $r=Invoke-PCWorkflow Disconnect -Plan $script:clientPlan -SkipConnectivityChecks -Confirm:$false
             $r.status|Should -Be client_closed
+            Should -Invoke Request-PCClientWindowClose -Times 1
             Should -Invoke Wait-PCClientExit -Times 1 -ParameterFilter {$WaitSeconds -eq 4}
             Should -Invoke Stop-Process -Times 1 -ParameterFilter {$Id -eq 991231 -and $Force}
+            Should -Invoke Test-PCConnectivity -Times 0
         }
     }
     It 'keeps original port scope when termination leaves the original process running' {
