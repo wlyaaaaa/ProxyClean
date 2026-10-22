@@ -64,10 +64,11 @@ Describe 'Guided GUI handoff keeps user intent without executing it' {
         Should -Invoke Request-PCElevation -Times 1 -ParameterFilter {$Action -eq $expectedAction}
         Should -Invoke Start-PCWork -Times 0
     }
-    It 'does not elevate or modify when the user declines authorization' {
+    It 'automatically elevates without an extra permission-only confirmation' {
         Mock Confirm-PCAction {$false}
         Invoke-PCAdapterAction IPv6Disable '禁用 IPv6'
-        Should -Invoke Request-PCElevation -Times 0
+        Should -Invoke Request-PCElevation -Times 1
+        Should -Invoke Confirm-PCAction -Times 0
         Should -Invoke Start-PCWork -Times 0
     }
     It 'requires confirmation even in an already elevated window' {

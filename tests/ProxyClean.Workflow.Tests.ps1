@@ -13,6 +13,8 @@ BeforeAll {
         }
     }
 }
+Describe 'Isolated administrator context' {
+BeforeEach { Mock Test-PCAdministrator {$true} -ModuleName ProxyClean.Common }
 Describe 'Readable inspection decisions reflect actual evidence' {
     BeforeEach {
         $s=New-WorkflowSnapshot
@@ -253,11 +255,11 @@ Describe 'GUI and CLI share the same controlled workflow' {
     }
 }
 Describe 'Double-click entries cannot silently execute network changes' {
-    It 'routes <Action> into a non-elevated preview-first GUI' -ForEach @(
+    It 'routes <Action> into an automatically elevated preview-first GUI' -ForEach @(
         @{Action='Control'},@{Action='Clean'},@{Action='Direct'},@{Action='StopPort'},@{Action='WifiSoft'},@{Action='WifiReset'}
     ) {
         $r=(& (Join-Path $script:root 'Launch-ProxyClean.ps1') -Action $Action -PreviewLaunch)|ConvertFrom-Json
-        $r.elevate|Should -BeFalse;$r.side_effects|Should -BeFalse;$r.preview_first|Should -BeTrue
+        $r.elevate|Should -BeTrue;$r.side_effects|Should -BeFalse;$r.preview_first|Should -BeTrue
         $r.arguments|Should -Contain (Join-Path $script:root 'ControlCenter.ps1')
         $r.arguments|Should -Contain '-STA'
         $r.arguments|Should -Not -Contain '-NoExit'
@@ -347,4 +349,6 @@ Describe 'Mutation stages survive interruption without storing diagnostic data' 
         (Invoke-PCWorkflow Disconnect -Plan @{} -Confirm:$false -WarningAction Stop 3>$null).status|Should -Be client_closed
         $script:PCStageRecording|Should -BeFalse;Should -Invoke Invoke-PCClientClose -Times 1
     } }
+}
+
 }

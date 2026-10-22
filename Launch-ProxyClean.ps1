@@ -3,7 +3,7 @@
 param([ValidateSet('Clean','Direct','WifiSoft','WifiReset','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns','Disconnect')][string]$Action='Control',
     [ValidateRange(0,65535)][int]$Port=0,
     [ValidateSet('Clean','Direct','WifiSoft','WifiReset','StopPort','Control','Undo','IPv6Enable','IPv6Disable','FlushDns','Disconnect')][string]$InitialAction='Control',
-    [string]$InterfaceAlias,[string]$ClientKey,[string]$ExpectedSid,[string]$ExpectedClientInstance,[switch]$ResumeDisconnect,[switch]$Elevated,[switch]$PreviewLaunch)
+    [string]$InterfaceAlias,[string]$ClientKey,[string]$ExpectedSid,[string]$ExpectedClientInstance,[switch]$ResumeDisconnect,[switch]$Elevated=$true,[switch]$PreviewLaunch)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
 $pwsh=Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
@@ -22,5 +22,5 @@ if($ResumeDisconnect){$arguments+=@('-ResumeDisconnect')}
 $argumentLine=($arguments|ForEach-Object{ConvertTo-PCArgument ([string]$_)}) -join ' '
 if($PreviewLaunch){[pscustomobject]@{executable=$exe;arguments=$arguments;argument_line=$argumentLine;elevate=[bool]$Elevated;side_effects=$false;preview_first=(-not [bool]$ResumeDisconnect)}|ConvertTo-Json -Depth 5;return}
 $start=@{FilePath=$exe;ArgumentList=$argumentLine;WorkingDirectory=$PSScriptRoot;WindowStyle='Hidden';ErrorAction='Stop'}
-if($Elevated -and -not(Test-PCAdministrator)){$start.Verb='RunAs'}
+if($Elevated -and -not(Test-PCAdministrator)){Invoke-ProjectElevated (New-ProjectInvocation $PSCommandPath $PSBoundParameters);exit $LASTEXITCODE}
 Start-Process @start|Out-Null

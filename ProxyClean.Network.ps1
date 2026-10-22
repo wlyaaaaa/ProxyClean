@@ -1,8 +1,15 @@
 ﻿#Requires -Version 5.1
 # Loaded by ProxyClean.Common; only explicit callers invoke mutations.
+. (Join-Path $PSScriptRoot 'Elevation.ps1')
+function Invoke-PCAdminCall([string]$Name, [System.Collections.IDictionary]$Parameters) {
+    $copy=@{};foreach($key in $Parameters.Keys){if($key -ne 'Progress'){$copy[$key]=$Parameters[$key]}}
+    $command="Import-Module '"+(Join-Path $PSScriptRoot 'ProxyClean.Common.psm1').Replace("'","''")+"'; "+(New-ProjectInvocation $Name $copy)+' | ConvertTo-Json -Depth 60 -Compress'
+    $json=Invoke-ProjectElevated $command
+    if($LASTEXITCODE -ne 0){throw '需要本人在场提权，或管理员操作失败；未按成功处理。'}
+    return ($json -join "`n" | ConvertFrom-Json)
+}
 function Test-PCAdministrator {
-    $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    Test-ProjectAdministrator
 }
 function Get-PCLocalPortListeners {
     [CmdletBinding()]
@@ -18,6 +25,7 @@ function Get-PCProcessIdentity {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
     $process=Get-Process -Id $ProcessId -ErrorAction Stop
+    if(-not $process.Path -and -not(Test-PCAdministrator)){return Invoke-PCAdminCall 'Get-PCProcessIdentity' $PSBoundParameters}
     [pscustomobject]@{pid=$process.Id;name=$process.ProcessName;start_utc=$process.StartTime.ToUniversalTime().ToString('O');path=$process.Path;session=$process.SessionId}
 }
 function Get-PCStopPlan {
@@ -111,7 +119,7 @@ function Invoke-PCWifiReset {
     $current=Get-PCWifiAdapter -InterfaceAlias $name
     if([int](Get-PCValue $current 'InterfaceIndex' (Get-PCValue $current 'ifIndex')) -ne $index){throw 'Adapter identity changed after selection.'}
     if(-not $PSCmdlet.ShouldProcess($name,"$Mode temporarily interrupts this connection")){return [pscustomobject]@{status='preview';mode=$Mode}}
-    if(-not(Test-PCAdministrator)){throw 'Network reset requires an elevated window for the same Windows user.'}
+    if(-not(Test-PCAdministrator)){$p=@{}+$PSBoundParameters;$p.Confirm=$false;return Invoke-PCAdminCall 'Invoke-PCWifiReset' $p}
     if($Mode -eq 'SoftReset'){
         $ip=Get-NetIPInterface -InterfaceIndex $index -AddressFamily IPv4 -ErrorAction Stop
         if([string]$ip.Dhcp -ne 'Enabled'){throw 'The adapter is not using DHCP; its static configuration was preserved.'}
@@ -153,6 +161,7 @@ function Get-PCIPv6Snapshot {
 function Invoke-PCIPv6Change {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
     param([ValidateSet('Toggle','Enable','Disable')][string]$Mode='Toggle',[string]$InterfaceAlias)
+    if(-not(Test-PCAdministrator)){return Invoke-PCAdminCall 'Invoke-PCIPv6Change' $PSBoundParameters}
     $adapters=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop|Where-Object{
         $_.Status -eq 'Up' -and (Get-PCValue $_ 'HardwareInterface') -eq $true -and
         $_.Name -notmatch 'VMware|vEthernet|Loopback|Tailscale|WSL|FlyingBird|natpierce'

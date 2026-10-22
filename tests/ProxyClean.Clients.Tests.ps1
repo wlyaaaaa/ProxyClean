@@ -12,6 +12,8 @@ BeforeAll {
             listeners=@();adapters=@();routes=@();environment=@();git=@();winhttp=$null;docker=$null}
     }
 }
+Describe 'Isolated administrator context' {
+BeforeEach { Mock Test-PCAdministrator {$true} -ModuleName ProxyClean.Common }
 Describe 'Client selection is independent of a hard-coded port' {
     It 'recognizes <Name> as <Label>' -ForEach @(
         @{Name='FlyingBirdCore';Label='飞鸟'},@{Name='FlyingBirdHelperService';Label='飞鸟'},@{Name='clash-verge';Label='Clash Verge'},@{Name='verge-mihomo';Label='Clash Verge'},
@@ -323,10 +325,12 @@ Describe 'Client previews preserve intent without executing shutdown' {
             {Get-PCClientClosePreview -ClientKey clash-verge -PreviousPlan $prior}|Should -Throw '*identity changed*'
         }
     }
-    It 'asks for authorization before reading inaccessible process identities' {
+    It 'automatically elevates before reading inaccessible process identities' {
         InModuleScope ProxyClean.Common {
             $script:previewGroup.requires_admin=$true
-            (Get-PCClientClosePreview).status|Should -Be client_needs_admin
+            Mock Invoke-PCAdminCall {[pscustomobject]@{status='client_preview'}}
+            (Get-PCClientClosePreview).status|Should -Be client_preview
+            Should -Invoke Invoke-PCAdminCall -Times 1 -ParameterFilter {$Name -eq 'Get-PCClientClosePreview'}
             Should -Invoke Get-PCProcessIdentity -Times 0
             Should -Invoke Invoke-PCNative -Times 0
         }
@@ -410,4 +414,6 @@ Describe 'Root launcher survives a fresh Git checkout' {
         $text=[Text.Encoding]::Unicode.GetString($bytes).TrimStart([char]0xFEFF)
         $text.StartsWith("Option Explicit`r`nDim sh")|Should -BeTrue
     }
+}
+
 }

@@ -10,6 +10,8 @@
 param([switch]$Direct,[switch]$Quiet,[switch]$Preview,[switch]$Undo,
     [Alias('AsJson')][switch]$Json,[switch]$SkipConnectivityChecks,[switch]$FlushDns)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'Elevation.ps1')
+if(-not(Test-ProjectAdministrator)){Invoke-ProjectElevated (New-ProjectInvocation $PSCommandPath $PSBoundParameters);exit $LASTEXITCODE}
 Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
 $progress=$null
 if(-not $Json -and -not $Quiet){$progress={param($Stage,$Message) Write-Host $Message}}

@@ -116,11 +116,11 @@ function Get-PCClientClosePreview {
         # ports in this same confirmed operation so cleanup is not lost on retry.
         $client.ports=@(@($client.ports)+@($PreviousPlan.ports)|Sort-Object -Unique)
     }
-    if($client.requires_admin -and -not(Test-PCAdministrator)){return [pscustomobject]@{status='client_needs_admin';key=$client.key;label=$client.label;instance=(Get-PCClientInstance $client $snapshot.sid)}}
+    if($client.requires_admin -and -not(Test-PCAdministrator)){return Invoke-PCAdminCall 'Get-PCClientClosePreview' $PSBoundParameters}
     if($snapshot.availability.listeners -ne 'observed'){throw 'PC_LISTENER_UNKNOWN'}
     $identities=@(foreach($p in $client.members){
         $identity=Get-PCProcessIdentity -ProcessId ([int]$p.ProcessId)
-        if(-not $identity.path){throw 'Client identity requires administrator access.'}
+        if(-not $identity.path){throw 'Process identity unavailable.'}
         if($identity.name -ine ($p.Name -replace '(?i)\.exe$','')){throw 'Process identity changed.'}
         $identity
     })

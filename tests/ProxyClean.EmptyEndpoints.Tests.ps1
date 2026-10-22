@@ -2,6 +2,8 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..\ProxyClean.Common.psm1') -Force
 }
+Describe 'Isolated administrator context' {
+BeforeEach { Mock Test-PCAdministrator {$true} -ModuleName ProxyClean.Common }
 Describe 'Empty proxy endpoints do not hide running clients' {
     BeforeEach {
         InModuleScope ProxyClean.Common {
@@ -113,4 +115,6 @@ Describe 'Empty proxy endpoints do not hide running clients' {
     It 'does not weaken the required endpoint contract or classify null as dead' {
         {Get-PCListenerState -Endpoint $null -Listeners @()}|Should -Throw
     }
+}
+
 }

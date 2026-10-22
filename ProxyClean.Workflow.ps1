@@ -80,7 +80,7 @@ function ConvertTo-PCFriendlyError {
         'PC_LISTENER_UNKNOWN'{return '暂时无法确认代理是否仍在运行。本次没有继续清理，请重新检查。'}
         'unfinished cleanup'{return '上次修改尚未恢复完成。请先点击“恢复上次修改”。'}
         'Another ProxyClean'{return '另一个 ProxyClean 窗口正在修改设置。完成后再试。'}
-        'elevat|administrator|Access.*denied|拒绝访问|Unauthorized'{return '这项操作需要管理员权限，请点击“授权后继续”。'}
+        'elevat|administrator|Access.*denied|拒绝访问|Unauthorized'{return '这项操作需要管理员权限，自动提权未完成，需要本人在场提权。'}
         'same intended Windows user|intended Windows user|never SYSTEM'{return '请从当前登录的 Windows 桌面打开本工具，不要以系统账户运行。'}
         'Exactly one intended physical adapter'{return '没有找到唯一的目标网卡，请在更多操作中明确选择网卡。'}
         'not using DHCP|static configuration'{return '这块网卡使用固定地址，未执行自动地址刷新。请保留原配置。'}
@@ -164,6 +164,7 @@ function Invoke-PCWorkflow {
             -not $PSCmdlet.ShouldProcess('选定的设置或程序','执行已确认的操作')){
             return [pscustomobject]@{action=$Action;status='preview'}
         }
+        if($Action -in @('Disconnect','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and -not $WhatIfPreference -and -not(Test-PCAdministrator)){$p=@{}+$PSBoundParameters;$p.Confirm=$false;return Invoke-PCAdminCall 'Invoke-PCWorkflow' $p}
         switch($Action){
             'Diagnose'{
                 $inspection=Invoke-PCWorkflow Inspect -Progress $Progress

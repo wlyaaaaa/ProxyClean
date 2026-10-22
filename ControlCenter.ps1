@@ -192,7 +192,7 @@ function Show-PCResult {
         }
         'client_needs_admin'{
             $pc.clientKey=$Result.key;$pc.clientInstance=$Result.instance;$pc.resumeAction='Disconnect'
-            Set-PCScreen ('关闭'+$Result.label+'需要授权') '点击后请求 Windows 授权；核验同一客户端后自动完成关闭，不再重复确认。' '授权并关闭' 'Elevate' 'warning'
+            Request-PCElevation 'Disconnect'
         }
         'client_preview'{
             $pc.pending=$Result.plan;$pc.clientKey=$Result.plan.key
@@ -322,7 +322,7 @@ function Invoke-PCAdapterAction {
     $selected=$pc.ui.AdapterCombo.SelectedItem
     if(-not $selected -or -not $selected.name){[void][Windows.MessageBox]::Show($window,'请先在“网卡与连接”下选择要操作的物理网卡。','请选择网卡','OK','Information');return}
     if(-not $pc.admin){
-        if(Confirm-PCAction ($Label+'需要管理员权限。授权后会回到检查页面，不会自动修改网卡。') '需要管理员权限'){Request-PCElevation $Action}
+        Request-PCElevation $Action
         return
     }
     if(Confirm-PCAction ($Label+'：'+$selected.name+"。`n`n可能暂时断网；代理设置的恢复按钮不能撤销这项网卡操作。正在远程控制这台电脑时，请谨慎选择。") $Label){
