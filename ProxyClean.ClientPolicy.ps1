@@ -33,7 +33,13 @@ function Get-PCClashVergeIntentStep {
     if((Get-PCValue $state 'core_should_be_running') -isnot [bool]){throw 'PC_CLIENT_STATE_UNSUPPORTED'}
     if(-not $state.core_should_be_running){return}
     $corePath=Get-PCValue (Get-PCValue (Get-PCValue $state 'last_clash_config') 'core_config') 'core_path'
-    if(-not $corePath -or -not @($Plan.members|Where-Object {([string]$_.path -replace '^\\\\\?\\','') -ieq ([string]$corePath -replace '^\\\\\?\\','')}).Count){throw 'PC_CLIENT_OWNER_CHANGED'}
+    $cores=@($Plan.members|Where-Object {-not(Test-PCClientBroker $_.name) -and -not(Test-PCClientController $_.name)})
+    $matched=$corePath -and @($cores|Where-Object {([string]$_.path -replace '^\\\\\?\\','') -ieq ([string]$corePath -replace '^\\\\\?\\','')}).Count
+    if(-not $matched -and -not $cores.Count -and $corePath){
+        $full=[IO.Path]::GetFullPath(([string]$corePath -replace '^\\\\\?\\',''))
+        $matched=$full.StartsWith(([IO.Path]::GetFullPath($bin).TrimEnd('\')+'\'),[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($full) -match '^(?i:verge-mihomo(?:-alpha)?)\.exe$'
+    }
+    if(-not $matched){throw 'PC_CLIENT_OWNER_CHANGED'}
     # Replace this boolean only: retain unknown fields and original JSON values verbatim.
     $pattern='("core_should_be_running"\s*:\s*)true\b'
     if([regex]::Matches($before,$pattern).Count -ne 1){throw 'PC_CLIENT_STATE_UNSUPPORTED'}
@@ -59,6 +65,18 @@ function Set-PCClientIntentValue {
         if([IO.File]::ReadAllText($Step.owner_file) -cne $Step.owner_before){throw 'PC_CLIENT_OWNER_CHANGED'}
     }finally{if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Force}}
 }
+function Clear-PCClientRunIntent {
+    param($Plan,[scriptblock]$Progress)
+    $intent=Get-PCClashVergeIntentStep -Plan $Plan
+    if(-not $intent){return}
+    $intentPlan=[pscustomobject]@{schema='proxyclean.plan.v1';id=[Guid]::NewGuid().ToString('N');sid=$Plan.sid;steps=@($intent)}
+    $intentResult=Invoke-PCRepairPlan -Plan $intentPlan -Progress $Progress -Confirm:$false
+    if($intentResult.status -ne 'applied'){throw 'PC_CLIENT_SERVICE_HELD_STOPPED'}
+    $journal=Get-PCJournal
+    if(-not $journal -or $journal.id -cne $intentPlan.id){throw 'Configuration changed after preview; preserved.'}
+    # A completed close must never be rearmed by undoing network settings.
+    $journal.steps[0].phase='committed';Save-PCJournal $journal
+}
 function Get-PCClientPortState {
     param([Parameter(Mandatory)]$Plan,[AllowEmptyCollection()][object[]]$Inventory=@())
     $otherIds=@($Inventory|Where-Object key -cne $Plan.key|ForEach-Object {Get-PCValue $_ 'members' @()}|ForEach-Object ProcessId)
@@ -72,7 +90,7 @@ function Get-PCClientPortState {
     [pscustomobject]@{closed=$closed;reassigned=$reassigned;unknown=$unknown}
 }
 function Assert-PCClientStayedClosed {
-    param([Parameter(Mandatory)]$Plan,[ValidateRange(0,5000)][int]$Milliseconds=1000)
+    param([Parameter(Mandatory)]$Plan,[ValidateRange(0,30000)][int]$Milliseconds=10000)
     $timer=[Diagnostics.Stopwatch]::StartNew()
     do{
         $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)
@@ -86,15 +104,16 @@ function Assert-PCClientStayedClosed {
 function Test-PCSelectedClientPresent {
     param([Parameter(Mandatory)]$Plan,[AllowEmptyCollection()][object[]]$Inventory=@())
     $family=Get-PCValue $Plan 'family_key' $Plan.key
+    $families=@($family)+@((Get-PCValue $Plan 'members' @())|ForEach-Object {$f=Get-PCClientFamily (Get-PCValue $_ 'name');if($f){$f.key}})
     $knownOthers=@(Get-PCValue $Plan 'other_instances' @())
-    $paths=@((Get-PCValue $Plan 'members' @())|ForEach-Object {Get-PCValue $_ 'path'}|Where-Object {$_})
+    $paths=@((Get-PCValue $Plan 'members' @())|ForEach-Object {(Get-PCValue $_ 'path') -replace '^\\\\\?\\',''}|Where-Object {$_})
     foreach($client in $Inventory){
         if($client.key -ceq $Plan.key){return $true}
         if($client.key -in $knownOthers){continue}
-        if((Get-PCValue $client 'family_key' $client.key) -cne $family){continue}
+        if((Get-PCValue $client 'family_key' $client.key) -cnotin $families){continue}
         # A replacement core has a new instance key. Report it, never terminate
         # it. Already observed independent instances are explicitly excluded.
-        if(@((Get-PCValue $client 'members' @())|Where-Object {(Get-PCValue $_ 'ExecutablePath') -in $paths}).Count){return $true}
+        if(@((Get-PCValue $client 'members' @())|Where-Object {((Get-PCValue $_ 'ExecutablePath') -replace '^\\\\\?\\','') -in $paths}).Count){return $true}
     }
     return $false
 }
@@ -115,18 +134,22 @@ function Restore-PCClientService {
     if($current.Count -ne 1 -or [string]$current[0].PathName -cne $Service.path){throw 'Service identity changed.'}
     if($current[0].State -eq 'Running'){return}
     $controller=Get-Service -Name $Service.name -ErrorAction Stop
-    if($controller.Status -eq 'StopPending'){$controller.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(8))}
+    if($controller.Status -eq 'StopPending'){$controller.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(20))}
     if($controller.Status -ne 'StartPending'){
         [void](Invoke-PCNative -FilePath (Join-Path $env:WINDIR 'System32\sc.exe') -ArgumentList @('start',$Service.name) -AllowedExitCodes @(0,1056) -TimeoutSeconds 10)
     }
-    $controller.WaitForStatus('Running',[TimeSpan]::FromSeconds(8))
+    try{$controller.WaitForStatus('Running',[TimeSpan]::FromSeconds(8))}catch{
+        $after=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $Service.name)
+        if($after.Count -eq 1 -and [string]$after[0].PathName -ceq $Service.path -and $after[0].State -eq 'Stopped'){return 'exited'}
+        throw
+    }
 }
 function Get-PCClientInstance {
     param([Parameter(Mandatory)]$Client,[Parameter(Mandatory)][string]$Sid)
     $rows=@(foreach($p in @($Client.members|Sort-Object ProcessId)){
         $born=Get-PCValue $p 'CreationDate'
         if(-not $born){throw 'Process identity unavailable.'}
-        '{0}|{1}|{2}|{3}' -f $p.ProcessId,([string]$p.Name).ToLowerInvariant(),$p.SessionId,([DateTime]$born).ToUniversalTime().ToString('O')
+        '{0}|{1}|{2}|{3}' -f $p.ProcessId,([string]$p.Name).ToLowerInvariant(),$p.SessionId,(ConvertTo-PCIdentityUtc $born)
     })
     if(-not $rows.Count){throw 'Process identity unavailable.'}
     $sha=[Security.Cryptography.SHA256]::Create()

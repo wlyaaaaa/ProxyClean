@@ -16,6 +16,8 @@ Describe 'Closing a client preserves its launch broker' {
             Mock Get-CimInstance {@([pscustomobject]@{Name='fixture-broker';ProcessId=882312;PathName='C:\Fixture\clash-verge-service.exe';State=$script:serviceState})}
             Mock Stop-PCClientService {$script:serviceState='Stopped'}
             Mock Restore-PCClientService {$script:serviceState='Running';$script:restored=$true}
+            Mock Clear-PCClientRunIntent {}
+            Mock Assert-PCClientStayedClosed {}
             Mock Start-Service {throw 'Unexpected real service action'}
             Mock Stop-Process {$script:alive=$false}
             Mock Get-NetTCPConnection {@()}
@@ -116,6 +118,7 @@ Describe 'Closing a client preserves its launch broker' {
     It 'detects a broker which unexpectedly relaunched an active core' {
         InModuleScope ProxyClean.Common {
             Mock Get-PCClientInventory {if($script:restored){[pscustomobject]@{key='clash-verge'}}}
+            Mock Assert-PCClientStayedClosed {if($script:restored){throw 'PC_CLIENT_RESTARTED'}}
             {Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false}|Should -Throw '*PC_CLIENT_RESTARTED*'
             Should -Invoke Invoke-PCRepairPlan -Times 0
         }
@@ -169,6 +172,48 @@ Describe 'Closing a client preserves its launch broker' {
             {Invoke-PCClientClose $script:plan -Confirm:$false}|Should -Throw '*identity changed*'
             Should -Invoke Stop-PCClientService -Times 0
             Should -Invoke Restore-PCClientService -Times 0
+        }
+    }
+    It 'rejects unsupported run intent before any process or service effect' {
+        InModuleScope ProxyClean.Common {
+            Mock Get-PCClashVergeIntentStep {throw 'PC_CLIENT_STATE_UNSUPPORTED'}
+            {Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false}|Should -Throw '*STATE_UNSUPPORTED*'
+            Should -Invoke Request-PCClientWindowClose -Times 0;Should -Invoke Stop-Process -Times 0
+            Should -Invoke Stop-PCClientService -Times 0;Should -Invoke Restore-PCClientService -Times 0
+        }
+    }
+    It 'clears run intent before restoring after a still-running early return' {
+        InModuleScope ProxyClean.Common {
+            $script:intentCleared=$false
+            Mock Get-PCLocalPortListeners {[pscustomobject]@{OwningProcess=899999;LocalPort=34567}}
+            Mock Clear-PCClientRunIntent {$script:serviceState|Should -Be Stopped;$script:intentCleared=$true}
+            Mock Restore-PCClientService {$script:intentCleared|Should -BeTrue;$script:serviceState='Running'}
+            (Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false).status|Should -Be client_still_running
+            Should -Invoke Restore-PCClientService -Times 1
+        }
+    }
+    It 'does not restore a timed-out broker even if stopping finishes before recovery (<State>)' -ForEach @(@{State='Stop Pending'},@{State='Stopped'}) {
+        InModuleScope ProxyClean.Common -Parameters @{State=$State} {
+            param($State)
+            $script:timeoutState=$State
+            Mock Stop-PCClientService {$script:serviceState=$script:timeoutState;throw 'PC_CLIENT_SERVICE_STOP_PENDING'}
+            {Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false}|Should -Throw '*SERVICE_STOP_PENDING*'
+            Should -Invoke Restore-PCClientService -Times 0
+            Should -Invoke Clear-PCClientRunIntent -Times ([int]($State -eq 'Stopped'))
+        }
+    }
+    It 'holds the broker stopped when clearing its run intent fails' {
+        InModuleScope ProxyClean.Common {
+            Mock Clear-PCClientRunIntent {throw 'fixture intent failure'}
+            {Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false}|Should -Throw '*SERVICE_HELD_STOPPED*'
+            Should -Invoke Restore-PCClientService -Times 0;$script:serviceState|Should -Be Stopped
+        }
+    }
+    It 'reports a restored broker exiting by itself as an explanation' {
+        InModuleScope ProxyClean.Common {
+            Mock Restore-PCClientService {$script:serviceState='Stopped';return 'exited'}
+            $r=Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false
+            $r.status|Should -Be client_closed;($r.remaining -join ';')|Should -Match '辅助服务.*退出'
         }
     }
 }

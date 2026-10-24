@@ -33,7 +33,7 @@ function Get-PCClientInventory {
         while($all.ContainsKey($parentId) -and $parentId -notin $visited){
             $visited+=@($parentId);$parent=$all[$parentId]
             $parentBorn=Get-PCValue $parent 'CreationDate'
-            if($childBorn -and $parentBorn -and [DateTime]$parentBorn -gt [DateTime]$childBorn){break}
+            if($childBorn -and $parentBorn -and (ConvertTo-PCIdentityUtc $parentBorn) -cgt (ConvertTo-PCIdentityUtc $childBorn)){break}
             if([int]$parent.SessionId -notin @(0,$session)){break}
             $owner=Get-PCClientFamily $parent.Name
             if($owner -and $owner.key -in @('flyingbird','clash-verge','clash-windows','tag')){
@@ -47,7 +47,7 @@ function Get-PCClientInventory {
         $groupKey=$family.key
         if(-not $managed){
             $born=Get-PCValue $coreRoot 'CreationDate'
-            $stamp=if($born){([DateTime]$born).ToUniversalTime().Ticks}else{'unknown'}
+            $stamp=if($born){([DateTime]::Parse((ConvertTo-PCIdentityUtc $born),[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)).Ticks}else{'unknown'}
             $groupKey=$family.key+'@'+$coreRoot.ProcessId+'@'+$stamp
         }
         if(-not $groups.ContainsKey($groupKey)){$groups[$groupKey]=[pscustomobject]@{key=$groupKey;family_key=$family.key;label=$family.label;members=@();ports=@();published=$false;requires_admin=$false}}
@@ -64,6 +64,25 @@ function Get-PCClientInventory {
             $group.ports+=@([int]$row.LocalPort)
             if(@($Endpoints|Where-Object{(Get-PCListenerState $_ @($row)) -eq 'listening'}).Count){$group.published=$true}
         }
+    }
+    # A departed parent can leave another copy of an already identified core.
+    # Merge only an unambiguous installed-core path, never a process name alone.
+    foreach($key in @($groups.Keys|Where-Object {$_ -match '@'}|Sort-Object)){
+        $orphan=$groups[$key];$ids=@($orphan.members.ProcessId)
+        $roots=@($orphan.members|Where-Object {[int]$_.ParentProcessId -notin $ids})
+        if(@($roots|Where-Object {$all.ContainsKey([int]$_.ParentProcessId)}).Count){continue}
+        $paths=@($roots|ForEach-Object {[string]$_.ExecutablePath -replace '^\\\\\?\\',''}|Where-Object {$_})
+        $owners=@($groups.Values|Where-Object {$_.key -notmatch '@' -and @($_.members|Where-Object {-not(Test-PCClientController $_.Name) -and -not(Test-PCClientBroker $_.Name) -and (Get-PCClientFamily $_.Name).key -ceq $orphan.family_key -and ([string]$_.ExecutablePath -replace '^\\\\\?\\','') -in $paths}).Count})
+        if(-not $owners.Count){
+            $owners=@($groups.Values|Where-Object {
+                $peer=$_;$peerIds=@($peer.members.ProcessId);$peerRoots=@($peer.members|Where-Object {[int]$_.ParentProcessId -notin $peerIds})
+                $peer.key -clt $key -and $peer.key -match '@' -and $peer.family_key -ceq $orphan.family_key -and -not @($peerRoots|Where-Object {$all.ContainsKey([int]$_.ParentProcessId)}).Count -and @($peerRoots|Where-Object {([string]$_.ExecutablePath -replace '^\\\\\?\\','') -in $paths}).Count
+            }|Sort-Object key|Select-Object -First 1)
+        }
+        if($owners.Count -ne 1){continue}
+        $owner=$owners[0];$owner.members+=@($orphan.members);$owner.ports+=@($orphan.ports)
+        $owner.published=$owner.published -or $orphan.published;$owner.requires_admin=$owner.requires_admin -or $orphan.requires_admin
+        $groups.Remove($key)
     }
     $clients=@($groups.Values|Where-Object {@($_.members|Where-Object {-not(Test-PCClientBroker $_.Name)}).Count -gt 0}|Sort-Object label,key)
     foreach($client in $clients){
@@ -139,7 +158,7 @@ function Test-PCClientProcess {
     $process=Get-Process -Id $Identity.pid -ErrorAction SilentlyContinue
     if(-not $process){return $false}
     $current=Get-PCProcessIdentity -ProcessId $Identity.pid
-    if($current.start_utc -cne $Identity.start_utc -or $current.path -ine $Identity.path -or $current.session -ne $Identity.session -or $current.name -ine $Identity.name){throw 'Process identity changed.'}
+    if((ConvertTo-PCIdentityUtc $current.start_utc) -cne (ConvertTo-PCIdentityUtc $Identity.start_utc) -or $current.path -ine $Identity.path -or $current.session -ne $Identity.session -or $current.name -ine $Identity.name){throw 'Process identity changed.'}
     return $true
 }
 function Request-PCClientWindowClose {
@@ -163,7 +182,8 @@ function Stop-PCClientService {
     if($current[0].State -ne 'Stop Pending'){
         [void](Invoke-PCNative -FilePath (Join-Path $env:WINDIR 'System32\sc.exe') -ArgumentList @('stop',$Service.name) -AllowedExitCodes @(0,1062) -TimeoutSeconds 10)
     }
-    (Get-Service -Name $Service.name -ErrorAction Stop).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(8))
+    try{(Get-Service -Name $Service.name -ErrorAction Stop).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(20))}
+    catch{throw 'PC_CLIENT_SERVICE_STOP_PENDING'}
 }
 function Invoke-PCClientClose {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
@@ -173,6 +193,7 @@ function Invoke-PCClientClose {
     if($identity.IsSystem -or $identity.User.Value -ne $Plan.sid){throw 'Use the same intended Windows user, never SYSTEM.'}
     if(-not $PSCmdlet.ShouldProcess($Plan.label,'Request normal client shutdown and handle verified residual processes')){return [pscustomobject]@{status='preview'}}
     $restore=New-Object 'Collections.Generic.List[object]'
+    $stopTimedOut=$false
     $forceAttempted=$false
     $lock=Enter-PCLock
     try{
@@ -184,6 +205,7 @@ function Invoke-PCClientClose {
             $s=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
             if($s.Count -ne 1 -or [string]$s[0].PathName -cne $service.path -or ($s[0].State -ne 'Stopped' -and [int]$s[0].ProcessId -ne $service.pid)){throw 'Service identity changed.'}
         }
+        [void](Get-PCClashVergeIntentStep -Plan $Plan)
         # Preserve the original broker state before a GUI exit can stop it.
         foreach($service in @($Plan.services)){
             $current=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
@@ -204,7 +226,7 @@ function Invoke-PCClientClose {
             $current=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
 
             if($current.Count -ne 1 -or [string]$current[0].PathName -cne $service.path){throw 'Service identity changed.'}
-            Stop-PCClientService $service
+            try{Stop-PCClientService $service}catch{if($_.Exception.Message -match 'PC_CLIENT_SERVICE_STOP_PENDING'){$stopTimedOut=$true};throw}
         }
         $remaining=@(Wait-PCClientExit -Plan $Plan -WaitSeconds $WaitSeconds)
         $forceAttempted=$forceAttempted -or $remaining.Count -gt 0
@@ -229,23 +251,12 @@ function Invoke-PCClientClose {
         if($remaining.Count -or $sameClient -or @($portState.unknown).Count){
             return [pscustomobject]@{status='client_still_running';key=$Plan.key;label=$Plan.label;force_attempted=$forceAttempted;previous_plan=$Plan;settings_changed=$false;message='客户端未完全退出，或端口被重新占用。尚未清理代理设置。'}
         }
-        # Verge 2.x service recovery remembers that the core should be running.
-        # With the service stopped, clear only that runtime intent using the same
-        # encrypted journal and compare/write/readback path as other changes.
-        $intent=Get-PCClashVergeIntentStep -Plan $Plan
-        if($intent){
-            $intentPlan=[pscustomobject]@{schema='proxyclean.plan.v1';id=[Guid]::NewGuid().ToString('N');sid=$Plan.sid;steps=@($intent)}
-            $intentResult=Invoke-PCRepairPlan -Plan $intentPlan -Progress $Progress -Confirm:$false
-            if($intentResult.status -ne 'applied'){return [pscustomobject]@{status='client_settings_incomplete';label=$Plan.label;settings=$intentResult}}
-            # Like terminating a process, a completed close is not undone by
-            # restoring network settings: do not re-arm a later core resurrection.
-            $journal=Get-PCJournal
-            if(-not $journal -or $journal.id -cne $intentPlan.id){throw 'Configuration changed after preview; preserved.'}
-            $journal.steps[0].phase='committed';Save-PCJournal $journal
-        }
+        Clear-PCClientRunIntent -Plan $Plan -Progress $Progress
+        $exitedServices=@()
+        $restoredServices=@($restore.ToArray())
         foreach($service in @($restore.ToArray())){
             Write-PCProgress $Progress 'service_restore' ('正在恢复'+$Plan.label+'的启动辅助服务…')
-            try{Restore-PCClientService $service}catch{throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
+            try{if((Restore-PCClientService $service) -eq 'exited'){$exitedServices+=@($service)}}catch{throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
             [void]$restore.Remove($service)
         }
         Write-PCProgress $Progress 'verify' '正在确认客户端保持关闭、辅助服务没有重新启动核心…'
@@ -271,6 +282,10 @@ function Invoke-PCClientClose {
         $still=@(Get-PCClientInventory -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop))
         $probe=if($SkipConnectivityChecks){[pscustomobject]@{status='not_tested'}}else{Test-PCConnectivity}
         $limits=New-Object 'Collections.Generic.List[string]'
+        foreach($service in $restoredServices){
+            $s=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
+            if($service -in $exitedServices -or ($s.Count -eq 1 -and [string]$s[0].PathName -ceq $service.path -and $s[0].State -eq 'Stopped')){$limits.Add('启动辅助服务恢复后自行退出；下次由客户端重新启动服务')}
+        }
         if(@($portState.reassigned).Count){$limits.Add('其他代理客户端已接管部分原端口，相关设置已保留')}
         if(@($after.availability.PSObject.Properties|Where-Object Value -eq 'unknown').Count){$limits.Add('部分网络状态未能确认')}
         if($dnsCache -eq 'failed'){$limits.Add('旧域名缓存未能刷新')}
@@ -289,11 +304,18 @@ function Invoke-PCClientClose {
         $restoreErrors=New-Object 'Collections.Generic.List[string]'
         try{
             foreach($service in $restore){
+                $s=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
+                if($s.Count -ne 1 -or [string]$s[0].PathName -cne $service.path){throw 'Service identity changed.'}
+                if($s[0].State -eq 'Stopped'){
+                    try{Clear-PCClientRunIntent -Plan $Plan}catch{throw 'PC_CLIENT_SERVICE_HELD_STOPPED'}
+                }
+                if($stopTimedOut -or $s[0].State -eq 'Stop Pending'){throw 'PC_CLIENT_SERVICE_STOP_PENDING'}
                 try{Write-PCProgress $Progress 'service_restore' ('正在恢复'+$Plan.label+'的启动辅助服务…')}catch{}
-                try{Restore-PCClientService $service}
+                try{[void](Restore-PCClientService $service)}
                 catch{$restoreErrors.Add($service.name)}
             }
             if($restoreErrors.Count){throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
+            if($restore.Count){Assert-PCClientStayedClosed -Plan $Plan}
         }finally{try{$lock.ReleaseMutex()}finally{$lock.Dispose()}}
     }
     $result

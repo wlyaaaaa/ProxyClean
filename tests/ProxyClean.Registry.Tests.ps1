@@ -84,6 +84,7 @@ Describe 'Mocked client shutdown completes real isolated settings writes and und
             Mock Test-PCClientProcess {$false}
             Mock Request-PCClientWindowClose {}
             Mock Stop-PCClientService {}
+            Mock Assert-PCClientStayedClosed {}
             Mock Stop-Process {throw 'Real process termination is prohibited in this test.'}
             Mock Invoke-PCNative {throw 'Native process execution is prohibited in this test.'}
             Mock Get-NetTCPConnection {@()}

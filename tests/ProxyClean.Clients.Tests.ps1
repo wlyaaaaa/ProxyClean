@@ -72,6 +72,7 @@ Describe 'Client selection is independent of a hard-coded port' {
     }
     It 'offers independent same-family cores as separate port-bound choices' {
         $rows=@((New-ClientNode 10001 xray),(New-ClientNode 10002 xray))
+        $rows[1].ExecutablePath='C:\OtherFixture\xray.exe'
         $listeners=@([pscustomobject]@{OwningProcess=10001;LocalAddress='127.0.0.1';LocalPort=45001},[pscustomobject]@{OwningProcess=10002;LocalAddress='127.0.0.1';LocalPort=45002})
         $r=@(Get-PCClientInventory -Processes $rows -Listeners $listeners)
         $r.Count|Should -Be 2
@@ -81,17 +82,20 @@ Describe 'Client selection is independent of a hard-coded port' {
     }
     It 'keeps a same-family core descendant with its actual root' {
         $rows=@((New-ClientNode 10001 xray),(New-ClientNode 10002 xray -Parent 10001),(New-ClientNode 10003 xray))
+        $rows[2].ExecutablePath='C:\OtherFixture\xray.exe'
         $r=@(Get-PCClientInventory -Processes $rows)
         $r.Count|Should -Be 2
         @($r|Where-Object {$_.members.ProcessId -contains 10001})[0].members.Count|Should -Be 2
     }
-    It 'does not merge dedicated standalone cores without a controller or broker' {
-        $r=@(Get-PCClientInventory -Processes @((New-ClientNode 10001 FlyingBirdCore),(New-ClientNode 10002 FlyingBirdCore)))
+    It 'does not merge dedicated standalone cores from different installations' {
+        $rows=@((New-ClientNode 10001 FlyingBirdCore),(New-ClientNode 10002 FlyingBirdCore));$rows[1].ExecutablePath='C:\OtherFixture\FlyingBirdCore.exe'
+        $r=@(Get-PCClientInventory -Processes $rows)
         $r.Count|Should -Be 2
         @($r.family_key|Select-Object -Unique)|Should -Be flyingbird
     }
     It 'does not assign an independent branded core to a GUI by its name alone' {
         $rows=@((New-ClientNode 10001 FlyingBird),(New-ClientNode 10002 FlyingBirdHelperService -Session 0),(New-ClientNode 10003 FlyingBirdCore -Parent 10002 -Session 0),(New-ClientNode 10004 FlyingBirdCore))
+        $rows[3].ExecutablePath='C:\OtherFixture\FlyingBirdCore.exe'
         $r=@(Get-PCClientInventory -Processes $rows)
         $r.Count|Should -Be 2
         @($r|Where-Object key -eq flyingbird)[0].members.Count|Should -Be 3
@@ -167,6 +171,7 @@ Describe 'One-click close handles verified residuals and reports partial results
             Mock Test-PCClientProcess {$false}
             Mock Request-PCClientWindowClose {}
             Mock Stop-PCClientService {}
+            Mock Assert-PCClientStayedClosed {}
             Mock Stop-Process {}
             Mock Get-NetTCPConnection {@()}
             Mock Get-PCClientInventory {@()}
@@ -371,7 +376,7 @@ Describe 'Client previews preserve intent without executing shutdown' {
     It 'stops only an exact verified service with a bounded native request' {
         InModuleScope ProxyClean.Common {
             Mock Get-CimInstance {@([pscustomobject]@{Name='fixture-proxy-service';State='Running';ProcessId=991231;PathName='C:\Fixture\helper.exe'})}
-            Mock Get-Service {$c=[pscustomobject]@{};$c|Add-Member ScriptMethod WaitForStatus {param($state,$timeout) $state|Should -Be Stopped;$timeout.TotalSeconds|Should -Be 8};$c}
+            Mock Get-Service {$c=[pscustomobject]@{};$c|Add-Member ScriptMethod WaitForStatus {param($state,$timeout) $state|Should -Be Stopped;$timeout.TotalSeconds|Should -Be 20};$c}
             Stop-PCClientService ([pscustomobject]@{name='fixture-proxy-service';pid=991231;path='C:\Fixture\helper.exe'})
             Should -Invoke Invoke-PCNative -Times 1 -ParameterFilter {$ArgumentList.Count -eq 2 -and $ArgumentList[0] -eq 'stop' -and $ArgumentList[1] -ceq 'fixture-proxy-service' -and $TimeoutSeconds -eq 10}
         }

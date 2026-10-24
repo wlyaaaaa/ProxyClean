@@ -318,14 +318,14 @@ Describe 'Mutation stages survive interruption without storing diagnostic data' 
         Mock Get-PCStagePath {$script:stageFixturePath};Mock Enter-PCLock {[Threading.Mutex]::new($true)}
         Mock Invoke-PCClientClose {Write-PCProgress $Progress 'service_stop' 'fixture-private-message';[pscustomobject]@{status='client_closed'}}
     } }
-    It 'persists each stage before delivering progress and marks a completed workflow done' { InModuleScope ProxyClean.Common {
+    It 'persists each stage before delivering progress and marks a closed client done_closed' { InModuleScope ProxyClean.Common {
         $seen=[Collections.Generic.List[object]]::new();$stagePath=Get-PCStagePath
         $callback={param($Stage,$Message)$seen.Add(([IO.File]::ReadAllText($stagePath)|ConvertFrom-Json))}.GetNewClosure()
         (Invoke-PCWorkflow Disconnect -Plan @{} -Progress $callback -Confirm:$false).status|Should -Be client_closed
-        $seen[-2].stage|Should -Be service_stop;$seen[-1].stage|Should -Be done
+        $seen[-2].stage|Should -Be service_stop;$seen[-1].stage|Should -Be done_closed
         @($seen[-1].PSObject.Properties.Name).Count|Should -Be 2
         $text=[IO.File]::ReadAllText($stagePath);$text|Should -Match '\.\d{3}Z';$text|Should -Not -Match 'fixture-private-message'
-        ($text|ConvertFrom-Json).stage|Should -Be done
+        ($text|ConvertFrom-Json).stage|Should -Be done_closed
     } }
     It 'preserves an interrupted stage during read-only work, WhatIf and a repair without changes' { InModuleScope ProxyClean.Common {
         $prior='{"stage":"service_stop","time":"2026-10-20T08:00:00.123Z"}';[IO.File]::WriteAllText((Get-PCStagePath),$prior)
@@ -336,13 +336,24 @@ Describe 'Mutation stages survive interruption without storing diagnostic data' 
         $notice=Get-PCInterruptedStageNotice
         $notice|Should -Match '正在停止辅助服务';$notice|Should -Match '16:00:00.123';$notice|Should -Match '不证明'
     } }
-    It 'marks an ordinary failure done without reporting close success' { InModuleScope ProxyClean.Common {
+    It 'marks an ordinary failure done_failed without reporting close success' { InModuleScope ProxyClean.Common {
         Mock Invoke-PCClientClose {Write-PCProgress $Progress 'service_restore' 'fixture';throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
         $messages=[Collections.Generic.List[string]]::new()
         $callback={param($Stage,$Message)$messages.Add($Message)}.GetNewClosure()
         (Invoke-PCWorkflow Disconnect -Plan @{} -Progress $callback -Confirm:$false).status|Should -Be failed
         $messages[-1]|Should -Be '本次操作已结束。'
-        ([IO.File]::ReadAllText((Get-PCStagePath))|ConvertFrom-Json).stage|Should -Be done;Get-PCInterruptedStageNotice|Should -BeNullOrEmpty
+        ([IO.File]::ReadAllText((Get-PCStagePath))|ConvertFrom-Json).stage|Should -Be done_failed;Get-PCInterruptedStageNotice|Should -BeNullOrEmpty
+    } }
+    It 'marks a returned incomplete close result done_failed' { InModuleScope ProxyClean.Common {
+        Mock Invoke-PCClientClose {[pscustomobject]@{status='client_still_running'}}
+        (Invoke-PCWorkflow Disconnect -Plan @{} -Confirm:$false).status|Should -Be client_still_running
+        ([IO.File]::ReadAllText((Get-PCStagePath))|ConvertFrom-Json).stage|Should -Be done_failed
+    } }
+    It 'recognizes current terminal stages and the legacy done marker' { InModuleScope ProxyClean.Common {
+        foreach($stage in @('done','done_closed','done_failed','done_repaired','done_cancelled')){
+            [IO.File]::WriteAllText((Get-PCStagePath),(@{stage=$stage;time='2026-10-20T08:00:00.123Z'}|ConvertTo-Json))
+            Get-PCInterruptedStageNotice|Should -BeNullOrEmpty
+        }
     } }
     It 'keeps a recording I/O failure from interrupting the client workflow' { InModuleScope ProxyClean.Common {
         Mock Get-PCStagePath {Split-Path -Parent $script:stageFixturePath}

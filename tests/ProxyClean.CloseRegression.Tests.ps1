@@ -6,9 +6,9 @@ Describe 'Bounded launch-broker restoration' {
         InModuleScope ProxyClean.Common {
             $script:service=[pscustomobject]@{name='fixture-broker';pid=991001;path='C:\Fixture\broker.exe'}
             $script:state='Stopped';$script:servicePath=$script:service.path
-            $script:controller=[pscustomobject]@{Status='Stopped';waits=@();failWait=$false}
-            $script:controller|Add-Member ScriptMethod WaitForStatus {param($target,$timeout) if($this.failWait){throw 'fixture wait timeout'};$this.waits+=@([string]$target);$this.Status=[string]$target}
-            Mock Get-CimInstance {[pscustomobject]@{Name='fixture-broker';State=$script:state;PathName=$script:servicePath}}
+            $script:controller=[pscustomobject]@{Status='Stopped';waits=@();failWait=$false;timeout=0}
+            $script:controller|Add-Member ScriptMethod WaitForStatus {param($target,$timeout) $this.timeout=$timeout.TotalSeconds;if($this.failWait){throw 'fixture wait timeout'};$this.waits+=@([string]$target);$this.Status=[string]$target}
+            Mock Get-CimInstance {[pscustomobject]@{Name='fixture-broker';ProcessId=$script:service.pid;State=$script:state;PathName=$script:servicePath}}
             Mock Get-Service {$script:controller}
             Mock Invoke-PCNative {[pscustomobject]@{exit_code=0}}
             Mock Start-Service {throw 'Use a bounded native start'}
@@ -38,7 +38,16 @@ Describe 'Bounded launch-broker restoration' {
         InModuleScope ProxyClean.Common {Mock Invoke-PCNative {throw 'fixture start failure'};{Restore-PCClientService $script:service}|Should -Throw '*start failure*'}
     }
     It 'surfaces a Running verification timeout' {
-        InModuleScope ProxyClean.Common {$script:controller.failWait=$true;{Restore-PCClientService $script:service}|Should -Throw '*wait timeout*'}
+        InModuleScope ProxyClean.Common {$script:state='Start Pending';$script:controller.failWait=$true;{Restore-PCClientService $script:service}|Should -Throw '*wait timeout*'}
+    }
+    It 'accepts an observed stopped broker after its start wait expires' {
+        InModuleScope ProxyClean.Common {$script:controller.failWait=$true;Restore-PCClientService $script:service|Should -Be exited;Should -Invoke Invoke-PCNative -Times 1}
+    }
+    It 'allows twenty seconds for a verified broker to stop' {
+        InModuleScope ProxyClean.Common {$script:state='Running';Stop-PCClientService $script:service;$script:controller.timeout|Should -Be 20;Should -Invoke Invoke-PCNative -Times 1 -ParameterFilter {$ArgumentList[0] -eq 'stop'}}
+    }
+    It 'reports a broker stop timeout without issuing a start request' {
+        InModuleScope ProxyClean.Common {$script:state='Running';$script:controller.failWait=$true;{Stop-PCClientService $script:service}|Should -Throw '*SERVICE_STOP_PENDING*';Should -Invoke Invoke-PCNative -Times 0 -ParameterFilter {$ArgumentList[0] -eq 'start'}}
     }
 }
 Describe 'A naturally exiting process is not a failed forced close' {

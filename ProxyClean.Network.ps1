@@ -6,7 +6,14 @@ function Invoke-PCAdminCall([string]$Name, [System.Collections.IDictionary]$Para
     $command="Import-Module '"+(Join-Path $PSScriptRoot 'ProxyClean.Common.psm1').Replace("'","''")+"'; "+(New-ProjectInvocation $Name $copy)+' | ConvertTo-Json -Depth 60 -Compress'
     $json=Invoke-ProjectElevated $command
     if($LASTEXITCODE -ne 0){throw '需要本人在场提权，或管理员操作失败；未按成功处理。'}
-    return ($json -join "`n" | ConvertFrom-Json)
+    $options=@{};if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$options.DateKind='String'}
+    return ($json -join "`n" | ConvertFrom-Json @options)
+}
+function ConvertTo-PCIdentityUtc {
+    param([Parameter(Mandatory)]$Value)
+    if($Value -is [DateTime]){return $Value.ToUniversalTime().ToString('O')}
+    if($Value -is [DateTimeOffset]){return $Value.UtcDateTime.ToString('O')}
+    return ([DateTimeOffset]::Parse([string]$Value,[Globalization.CultureInfo]::InvariantCulture)).UtcDateTime.ToString('O')
 }
 function Test-PCAdministrator {
     Test-ProjectAdministrator
@@ -66,7 +73,7 @@ function Invoke-PCStopPlan {
         if(-not $PSCmdlet.ShouldProcess(('PID {0} {1}' -f $candidate.pid,$candidate.name),'Stop this verified process; this action is not undoable')){continue}
         try{
             $current=Get-PCProcessIdentity -ProcessId $candidate.pid
-            if($current.start_utc -cne $candidate.start_utc -or $current.path -cne $candidate.path -or $current.session -ne $candidate.session){throw 'Process identity changed.'}
+            if((ConvertTo-PCIdentityUtc $current.start_utc) -cne (ConvertTo-PCIdentityUtc $candidate.start_utc) -or $current.path -cne $candidate.path -or $current.session -ne $candidate.session){throw 'Process identity changed.'}
             if($candidate.selection -eq 'port_listener' -and $candidate.pid -notin @(Get-PCLocalPortListeners -Port $Plan.port|ForEach-Object{$_.OwningProcess})){throw 'Process no longer owns the target listener.'}
             Stop-Process -Id $candidate.pid -Force -ErrorAction Stop
             $stopped.Add([int]$candidate.pid)

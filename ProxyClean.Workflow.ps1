@@ -24,7 +24,7 @@ function Get-PCInterruptedStageNotice {
         $path=Get-PCStagePath
         if(-not(Test-Path -LiteralPath $path)){return ''}
         $record=[IO.File]::ReadAllText($path)|ConvertFrom-Json
-        if($record.stage -eq 'done'){return ''}
+        if($record.stage -in @('done','done_closed','done_failed','done_repaired','done_cancelled')){return ''}
         $labels=@{close='正在请求客户端退出';service_stop='正在停止辅助服务';service_restore='正在恢复辅助服务';force='正在处理残留进程';verify='正在复查退出或设置';connectivity='正在检查联网';revalidate='正在复查修改条件';backup='正在保存恢复记录';apply='正在修改设置';rollback='正在恢复本次修改';notify='正在通知系统';dns='正在刷新 DNS 缓存';listeners='正在读取监听状态';network='正在读取网卡与路由';settings='正在读取代理设置';git='正在读取 Git 设置';consumers='正在读取应用代理状态'}
         $label=if($labels.ContainsKey([string]$record.stage)){$labels[[string]$record.stage]}else{'未识别的步骤'}
         $time=([DateTimeOffset]$record.time).ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-dd HH:mm:ss.fff')
@@ -70,6 +70,8 @@ function ConvertTo-PCFriendlyError {
     switch -Regex ($message){
         'PC_CANCELLED|OperationCanceled'{return '检查已取消，没有修改网络设置。'}
         'PC_CLIENT_SERVICE_RESTORE_FAILED'{return '客户端退出后，启动辅助服务未能恢复；不能确认下次可以启动。请在客户端设置中修复服务，不要反复清理网络。'}
+        'PC_CLIENT_SERVICE_HELD_STOPPED'{return 'Clash Verge 的核心运行标记未能清除；为避免服务把内核重新拉起，辅助服务保持停止。请检查客户端服务状态后重试。'}
+        'PC_CLIENT_SERVICE_STOP_PENDING'{return '辅助服务仍在停止中，本次未重新启动服务，也未清理代理引用。请等待服务停止后重新检查。'}
         'PC_CLIENT_OWNER_CHANGED'{return 'Clash Verge 的运行实例或所属用户已变化。已停止本次操作，请重新检查。'}
         'PC_CLIENT_STATE_UNSUPPORTED'{return '暂时无法读取 Clash Verge 的运行恢复状态，已保留原设置。请从 Clash Verge 托盘菜单退出后重新检查。'}
         'PC_CLIENT_PORT_OCCUPIED'{return '原代理端口已被另一个尚未识别的程序占用，相关代理设置已保留。请重新检查端口归属。'}
@@ -158,7 +160,7 @@ function Invoke-PCWorkflow {
         $Plan,[string]$ClientKey,[string]$ExpectedClientInstance,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,
         [switch]$SkipConnectivityChecks,[scriptblock]$Progress)
     # Disconnect 与 Repair 的内部函数会在同一线程重取同名 Mutex，依赖其可重入性，并各自成对释放。
-    $stageLock=$null
+    $stageLock=$null;$stageEnd='done_failed'
     try{
         if($Action -in @('Disconnect','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
             -not $PSCmdlet.ShouldProcess('选定的设置或程序','执行已确认的操作')){
@@ -181,7 +183,9 @@ function Invoke-PCWorkflow {
                 if(-not $Plan){throw 'Please preview the client first.'}
                 $stageLock=Enter-PCLock;$script:PCStageRecording=$true
                 Write-PCProgress $Progress 'close' '正在准备关闭已确认的客户端…'
-                return Invoke-PCClientClose -Plan $Plan -SkipConnectivityChecks:$SkipConnectivityChecks -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
+                $result=Invoke-PCClientClose -Plan $Plan -SkipConnectivityChecks:$SkipConnectivityChecks -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
+                if($result.status -eq 'client_closed'){$stageEnd='done_closed'}
+                return $result
             }
             'Inspect'{
                 $snapshot=Get-PCSnapshot -Progress $Progress
@@ -212,6 +216,7 @@ function Invoke-PCWorkflow {
                     Write-PCProgress $Progress 'connectivity' '正在测试网页连接，结果与设置修复分别报告…'
                     $probe=Test-PCConnectivity
                 }
+                if($applied.status -in @('applied','no_changes')){$stageEnd='done_repaired'}
                 return [pscustomobject]@{schema='proxyclean.cleanup-result.v1';action=$Action;status=$applied.status;plan=ConvertTo-PCPublicPlan $Plan;configuration=$applied;notification=$notification;dns_cache='not_changed';connectivity=$probe;all_applications_direct='not_proven'}
             }
             'Undo'{
@@ -270,10 +275,11 @@ function Invoke-PCWorkflow {
         }
     }catch{
         $cancel=[string]$_.Exception.Message -match 'PC_CANCELLED'
+        if($cancel){$stageEnd='done_cancelled'}
         return [pscustomobject]@{action=$Action;status=if($cancel){'cancelled'}else{'failed'};message=ConvertTo-PCFriendlyError $_;error_type=$_.Exception.GetType().FullName}
     }finally{
         if($stageLock){
-            try{Write-PCProgress $Progress 'done' '本次操作已结束。'}
+            try{Write-PCProgress $Progress $stageEnd '本次操作已结束。'}
             finally{$script:PCStageRecording=$false;try{$stageLock.ReleaseMutex()}finally{$stageLock.Dispose()}}
         }
     }

@@ -49,6 +49,17 @@ Describe 'Clash Verge persisted run intent is scoped and recoverable' {
             {Get-PCClashVergeIntentStep $script:plan}|Should -Throw '*OWNER_CHANGED*'
         }
     }
+    It 'clears persisted intent for an absent core from the same service bin' {
+        InModuleScope ProxyClean.Common {
+            $core=Join-Path $script:fixtureRoot 'bin\verge-mihomo-alpha.exe';$script:plan.members=@()
+            [IO.File]::WriteAllText($script:statePath,$script:original.Replace('C:\\Fixture\\verge-mihomo.exe',$core.Replace('\','\\')))
+            $step=Get-PCClashVergeIntentStep $script:plan;Set-PCResourceValue $step $step.after
+            ([IO.File]::ReadAllText($script:statePath)|ConvertFrom-Json).core_should_be_running|Should -BeFalse
+        }
+    }
+    It 'does not infer an absent core belongs to another installation' {
+        InModuleScope ProxyClean.Common {$script:plan.members=@();{Get-PCClashVergeIntentStep $script:plan}|Should -Throw '*OWNER_CHANGED*'}
+    }
     It 'does nothing for a different client or older installation' {
         InModuleScope ProxyClean.Common {
             $script:plan.key='flyingbird';Get-PCClashVergeIntentStep $script:plan|Should -BeNullOrEmpty
@@ -115,13 +126,17 @@ Describe 'Clash Verge persisted run intent is scoped and recoverable' {
     }
 }
 Describe 'Broker restart verification is bounded and precedes cleanup' {
-    It 'detects a core appearing only after the first observation' {
+    It 'uses ten seconds by default and detects a core appearing after six seconds of observations' {
         InModuleScope ProxyClean.Common {
-            $script:observations=0
+            $parameter=(Get-Command Assert-PCClientStayedClosed).ScriptBlock.Ast.Find({param($n)$n -is [Management.Automation.Language.ParameterAst] -and $n.Name.VariablePath.UserPath -eq 'Milliseconds'},$true)
+            $parameter.DefaultValue.Value|Should -Be 10000
+            $script:elapsed=0
+            Mock Start-Sleep {param($Milliseconds)$script:elapsed+=$Milliseconds}
             Mock Get-NetTCPConnection {@()}
             Mock Get-PCLocalPortListeners {@()}
-            Mock Get-PCClientInventory {$script:observations++;if($script:observations -gt 1){[pscustomobject]@{key='clash-verge'}}}
-            {Assert-PCClientStayedClosed ([pscustomobject]@{key='clash-verge';ports=@()}) -Milliseconds 500}|Should -Throw '*CLIENT_RESTARTED*'
+            Mock Get-PCClientInventory {if($script:elapsed -ge 6000){[pscustomobject]@{key='clash-verge'}}}
+            {Assert-PCClientStayedClosed ([pscustomobject]@{key='clash-verge';ports=@()})}|Should -Throw '*CLIENT_RESTARTED*'
+            $script:elapsed|Should -Be 6000
         }
     }
     It 'does not confuse another running client with the client being closed' {
