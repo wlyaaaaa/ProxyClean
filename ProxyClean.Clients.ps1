@@ -194,6 +194,7 @@ function Invoke-PCClientClose {
     if(-not $PSCmdlet.ShouldProcess($Plan.label,'Request normal client shutdown and handle verified residual processes')){return [pscustomobject]@{status='preview'}}
     $restore=New-Object 'Collections.Generic.List[object]'
     $stopTimedOut=$false
+    $closeConfirmed=$false
     $forceAttempted=$false
     $lock=Enter-PCLock
     try{
@@ -251,6 +252,7 @@ function Invoke-PCClientClose {
         if($remaining.Count -or $sameClient -or @($portState.unknown).Count){
             return [pscustomobject]@{status='client_still_running';key=$Plan.key;label=$Plan.label;force_attempted=$forceAttempted;previous_plan=$Plan;settings_changed=$false;message='客户端未完全退出，或端口被重新占用。尚未清理代理设置。'}
         }
+        $closeConfirmed=$true
         Clear-PCClientRunIntent -Plan $Plan -Progress $Progress
         $exitedServices=@()
         $restoredServices=@($restore.ToArray())
@@ -315,7 +317,8 @@ function Invoke-PCClientClose {
                 catch{$restoreErrors.Add($service.name)}
             }
             if($restoreErrors.Count){throw 'PC_CLIENT_SERVICE_RESTORE_FAILED'}
-            if($restore.Count){Assert-PCClientStayedClosed -Plan $Plan}
+            # Only a confirmed close can be "restarted"; earlier exits keep their own result or error.
+            if($restore.Count -and $closeConfirmed){Assert-PCClientStayedClosed -Plan $Plan}
         }finally{try{$lock.ReleaseMutex()}finally{$lock.Dispose()}}
     }
     $result

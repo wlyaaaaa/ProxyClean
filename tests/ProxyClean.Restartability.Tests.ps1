@@ -60,8 +60,10 @@ Describe 'Closing a client preserves its launch broker' {
         InModuleScope ProxyClean.Common {
             $script:alive=$true
             Mock Stop-Process {}
+            Mock Assert-PCClientStayedClosed {throw 'PC_CLIENT_RESTARTED'}
             (Invoke-PCClientClose $script:plan -WaitSeconds 0 -Confirm:$false).status|Should -Be client_still_running
             Should -Invoke Restore-PCClientService -Times 1
+            Should -Invoke Assert-PCClientStayedClosed -Times 0
             Should -Invoke Invoke-PCRepairPlan -Times 0
         }
     }
