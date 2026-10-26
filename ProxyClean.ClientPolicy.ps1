@@ -1,11 +1,28 @@
 ﻿#Requires -Version 5.1
 # Client policy and lifecycle helpers. Importing this file has no effects.
+function Get-PCFlyingBirdRole {
+    param([string]$Name,[string]$Path)
+    # Apex uses generic helper and hash names. Only its known installations
+    # authorize family membership, including a core whose parent has exited.
+    $full=$Path -replace '^\\\\\?\\',''
+    if($full -notmatch '^[A-Za-z]:\\'){return}
+    try{$full=[IO.Path]::GetFullPath($full)}catch{return}
+    if(($Name -replace '(?i)\.exe$','') -ine [IO.Path]::GetFileNameWithoutExtension($full)){return}
+    switch -Regex ($full) {
+        '^C:\\Program Files \(x86\)\\飞鸟-极速版\\Apex\.exe$' {return 'controller'}
+        '^C:\\ProgramData\\uanetfbclientappapexHelperService\\helper-service\.exe$' {return 'broker'}
+        '^C:\\ProgramData\\ApexHelperCoreCache-v1\\[^\\]+\\[a-f0-9]{64}\.exe$' {return 'core'}
+        '^E:\\Data\\PCConfig\\FlyingBirdAutostart\\sidecar\\fb-ai-entry\.exe$' {return 'core'}
+    }
+}
 function Test-PCClientBroker {
-    param([string]$Name)
+    param([string]$Name,[string]$Path)
+    if((Get-PCFlyingBirdRole $Name $Path) -eq 'broker'){return $true}
     return ($Name -replace '(?i)\.exe$','') -match '^(?i:clash-verge-service|verge-service|FlyingBirdHelperService)$'
 }
 function Test-PCClientController {
-    param([string]$Name)
+    param([string]$Name,[string]$Path)
+    if((Get-PCFlyingBirdRole $Name $Path) -eq 'controller'){return $true}
     return ($Name -replace '(?i)\.exe$','') -match '^(?i:FlyingBird|clash-verge|Clash for Windows|tag)$'
 }
 function Get-PCClashVergeIntentStep {
@@ -33,7 +50,7 @@ function Get-PCClashVergeIntentStep {
     if((Get-PCValue $state 'core_should_be_running') -isnot [bool]){throw 'PC_CLIENT_STATE_UNSUPPORTED'}
     if(-not $state.core_should_be_running){return}
     $corePath=Get-PCValue (Get-PCValue (Get-PCValue $state 'last_clash_config') 'core_config') 'core_path'
-    $cores=@($Plan.members|Where-Object {-not(Test-PCClientBroker $_.name) -and -not(Test-PCClientController $_.name)})
+    $cores=@($Plan.members|Where-Object {-not(Test-PCClientBroker $_.name $_.path) -and -not(Test-PCClientController $_.name $_.path)})
     $matched=$corePath -and @($cores|Where-Object {([string]$_.path -replace '^\\\\\?\\','') -ieq ([string]$corePath -replace '^\\\\\?\\','')}).Count
     if(-not $matched -and -not $cores.Count -and $corePath){
         $full=[IO.Path]::GetFullPath(([string]$corePath -replace '^\\\\\?\\',''))
@@ -104,7 +121,7 @@ function Assert-PCClientStayedClosed {
 function Test-PCSelectedClientPresent {
     param([Parameter(Mandatory)]$Plan,[AllowEmptyCollection()][object[]]$Inventory=@())
     $family=Get-PCValue $Plan 'family_key' $Plan.key
-    $families=@($family)+@((Get-PCValue $Plan 'members' @())|ForEach-Object {$f=Get-PCClientFamily (Get-PCValue $_ 'name');if($f){$f.key}})
+    $families=@($family)+@((Get-PCValue $Plan 'members' @())|ForEach-Object {$f=Get-PCClientFamily (Get-PCValue $_ 'name') (Get-PCValue $_ 'path');if($f){$f.key}})
     $knownOthers=@(Get-PCValue $Plan 'other_instances' @())
     $paths=@((Get-PCValue $Plan 'members' @())|ForEach-Object {(Get-PCValue $_ 'path') -replace '^\\\\\?\\',''}|Where-Object {$_})
     foreach($client in $Inventory){

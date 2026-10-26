@@ -1,7 +1,8 @@
 ﻿#Requires -Version 5.1
 # Client-level navigation and bounded shutdown. Display names never authorize effects.
 function Get-PCClientFamily {
-    param([string]$Name)
+    param([string]$Name,[string]$Path)
+    if(Get-PCFlyingBirdRole $Name $Path){return [pscustomobject]@{key='flyingbird';label='飞鸟'}}
     switch -Regex ($Name -replace '(?i)\.exe$','') {
         '^(?i:FlyingBird(?:Core|HelperService)?)$' {return [pscustomobject]@{key='flyingbird';label='飞鸟'}}
         '^(?i:clash-verge|verge-mihomo(?:-alpha)?|clash-verge-service|verge-service)$' {return [pscustomobject]@{key='clash-verge';label='Clash Verge'}}
@@ -14,31 +15,41 @@ function Get-PCClientFamily {
 }
 function Get-PCClientInventory {
     [CmdletBinding()]
-    param([AllowEmptyCollection()][object[]]$Listeners=@(),[AllowEmptyCollection()][object[]]$Endpoints=@(),[AllowEmptyCollection()][object[]]$Processes=@())
+    param([AllowEmptyCollection()][object[]]$Listeners=@(),[AllowEmptyCollection()][object[]]$Endpoints=@(),[AllowEmptyCollection()][object[]]$Processes=@(),[switch]$RequireComplete)
     if(-not $PSBoundParameters.ContainsKey('Processes')){$Processes=@(Get-CimInstance Win32_Process -ErrorAction Stop)}
     # Optional endpoint inputs can be null; absence is not a dead endpoint.
     $Endpoints=@($Endpoints|Where-Object{$null -ne $_})
     $session=(Get-Process -Id $PID).SessionId
+    # SYSTEM paths may be hidden before elevation. These names authorize only
+    # a complete re-read for a close preview, never family membership or effects.
+    if($RequireComplete -and @($Processes|Where-Object {
+        [int]$_.ProcessId -gt 4 -and [int]$_.ProcessId -ne $PID -and [int]$_.SessionId -in @(0,$session) -and
+        -not [string]$_.ExecutablePath -and $_.Name -match '^(?i:Apex|helper-service|fb-ai-entry|[a-f0-9]{64})(?:\.exe)?$'
+    }).Count){
+        if(-not(Test-PCAdministrator)){throw 'PC_CLIENT_PATH_NEEDS_ADMIN'}
+        throw 'Process identity unavailable.'
+    }
     $all=@{};foreach($p in $Processes){$all[[int]$p.ProcessId]=$p}
     $groups=@{}
     foreach($p in $Processes){
         if([int]$p.ProcessId -le 4 -or [int]$p.ProcessId -eq $PID -or [int]$p.SessionId -notin @(0,$session)){continue}
-        $family=Get-PCClientFamily $p.Name
+        $family=Get-PCClientFamily $p.Name $p.ExecutablePath
         if(-not $family){continue}
         # A generic core is assigned to its actual controller, never to a brand
         # merely because a similarly named GUI happens to be running.
         $parentId=[int]$p.ParentProcessId;$visited=@();$coreRoot=$p
-        $managed=(Test-PCClientController $p.Name) -or (Test-PCClientBroker $p.Name)
+        $installedFlyingBird=[bool](Get-PCFlyingBirdRole $p.Name $p.ExecutablePath)
+        $managed=$installedFlyingBird -or (Test-PCClientController $p.Name $p.ExecutablePath) -or (Test-PCClientBroker $p.Name $p.ExecutablePath)
         $childBorn=Get-PCValue $p 'CreationDate'
-        while($all.ContainsKey($parentId) -and $parentId -notin $visited){
+        while(-not $installedFlyingBird -and $all.ContainsKey($parentId) -and $parentId -notin $visited){
             $visited+=@($parentId);$parent=$all[$parentId]
             $parentBorn=Get-PCValue $parent 'CreationDate'
             if($childBorn -and $parentBorn -and (ConvertTo-PCIdentityUtc $parentBorn) -cgt (ConvertTo-PCIdentityUtc $childBorn)){break}
             if([int]$parent.SessionId -notin @(0,$session)){break}
-            $owner=Get-PCClientFamily $parent.Name
+            $owner=Get-PCClientFamily $parent.Name $parent.ExecutablePath
             if($owner -and $owner.key -in @('flyingbird','clash-verge','clash-windows','tag')){
                 $family=$owner;$coreRoot=$parent
-                if((Test-PCClientController $parent.Name) -or (Test-PCClientBroker $parent.Name)){$managed=$true;break}
+                if((Test-PCClientController $parent.Name $parent.ExecutablePath) -or (Test-PCClientBroker $parent.Name $parent.ExecutablePath)){$managed=$true;break}
             }
             if($owner -and $owner.key -ceq $family.key){$coreRoot=$parent}
             $childBorn=$parentBorn
@@ -56,7 +67,7 @@ function Get-PCClientInventory {
         if([int]$p.SessionId -ne $session -or -not [string]$p.ExecutablePath){$group.requires_admin=$true}
         # A launch helper's control listener is not a proxy endpoint. It must
         # remain available when the helper is restored for the next launch.
-        if(Test-PCClientBroker $p.Name){continue}
+        if(Test-PCClientBroker $p.Name $p.ExecutablePath){continue}
         foreach($row in @($Listeners|Where-Object{[int]$_.OwningProcess -eq [int]$p.ProcessId})){
             [Net.IPAddress]$ip=$null
             if(-not [Net.IPAddress]::TryParse([string]$row.LocalAddress,[ref]$ip)){continue}
@@ -72,7 +83,7 @@ function Get-PCClientInventory {
         $roots=@($orphan.members|Where-Object {[int]$_.ParentProcessId -notin $ids})
         if(@($roots|Where-Object {$all.ContainsKey([int]$_.ParentProcessId)}).Count){continue}
         $paths=@($roots|ForEach-Object {[string]$_.ExecutablePath -replace '^\\\\\?\\',''}|Where-Object {$_})
-        $owners=@($groups.Values|Where-Object {$_.key -notmatch '@' -and @($_.members|Where-Object {-not(Test-PCClientController $_.Name) -and -not(Test-PCClientBroker $_.Name) -and (Get-PCClientFamily $_.Name).key -ceq $orphan.family_key -and ([string]$_.ExecutablePath -replace '^\\\\\?\\','') -in $paths}).Count})
+        $owners=@($groups.Values|Where-Object {$_.key -notmatch '@' -and @($_.members|Where-Object {-not(Test-PCClientController $_.Name $_.ExecutablePath) -and -not(Test-PCClientBroker $_.Name $_.ExecutablePath) -and (Get-PCClientFamily $_.Name $_.ExecutablePath).key -ceq $orphan.family_key -and ([string]$_.ExecutablePath -replace '^\\\\\?\\','') -in $paths}).Count})
         if(-not $owners.Count){
             $owners=@($groups.Values|Where-Object {
                 $peer=$_;$peerIds=@($peer.members.ProcessId);$peerRoots=@($peer.members|Where-Object {[int]$_.ParentProcessId -notin $peerIds})
@@ -84,7 +95,7 @@ function Get-PCClientInventory {
         $owner.published=$owner.published -or $orphan.published;$owner.requires_admin=$owner.requires_admin -or $orphan.requires_admin
         $groups.Remove($key)
     }
-    $clients=@($groups.Values|Where-Object {@($_.members|Where-Object {-not(Test-PCClientBroker $_.Name)}).Count -gt 0}|Sort-Object label,key)
+    $clients=@($groups.Values|Where-Object {@($_.members|Where-Object {-not(Test-PCClientBroker $_.Name $_.ExecutablePath)}).Count -gt 0}|Sort-Object label,key)
     foreach($client in $clients){
         $client.ports=@($client.ports|Sort-Object -Unique)
         if(@($clients|Where-Object family_key -ceq $client.family_key).Count -gt 1){
@@ -118,7 +129,11 @@ function Get-PCClientClosePreview {
     Write-PCProgress $Progress 'clients' '正在确认运行中的代理客户端…'
     $snapshot=Get-PCSnapshot -Progress $Progress
     $endpoints=@(if($snapshot.systemProxy -and $snapshot.systemProxy.enabled){Get-ProxyEndpoints $snapshot.systemProxy.server})
-    $clients=@(Get-PCClientInventory -Listeners $snapshot.listeners -Endpoints $endpoints)
+    try{$clients=@(Get-PCClientInventory -Listeners $snapshot.listeners -Endpoints $endpoints -RequireComplete)}
+    catch{
+        if($_.Exception.Message -ne 'PC_CLIENT_PATH_NEEDS_ADMIN'){throw}
+        return Invoke-PCAdminCall 'Get-PCClientClosePreview' $PSBoundParameters
+    }
     $undo=Get-PCUndoSummary
     if($undo.phase -notin @('none','undone','completed')){throw 'An unfinished cleanup exists.'}
     if($ClientKey){$selected=@($clients|Where-Object key -ceq $ClientKey)}else{$selected=$clients}
@@ -210,13 +225,13 @@ function Invoke-PCClientClose {
         # Preserve the original broker state before a GUI exit can stop it.
         foreach($service in @($Plan.services)){
             $current=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object Name -ceq $service.name)
-            if($current.Count -eq 1 -and $current[0].State -eq 'Running' -and @($Plan.members|Where-Object {$_.pid -eq $service.pid -and (Test-PCClientBroker $_.name)}).Count){$restore.Add($service)}
+            if($current.Count -eq 1 -and $current[0].State -eq 'Running' -and @($Plan.members|Where-Object {$_.pid -eq $service.pid -and (Test-PCClientBroker $_.name $_.path)}).Count){$restore.Add($service)}
         }
         Write-PCProgress $Progress 'close' ('正在请求'+$Plan.label+'正常退出…')
         foreach($member in @($Plan.members)){Request-PCClientWindowClose $member}
         # A window close may only minimize a tray client. Remove its controller
         # before stopping the broker, so it cannot race the service or restart it.
-        $controllers=[pscustomobject]@{members=@($Plan.members|Where-Object {Test-PCClientController $_.name})}
+        $controllers=[pscustomobject]@{members=@($Plan.members|Where-Object {Test-PCClientController $_.name $_.path})}
         if($controllers.members.Count){
             $left=@(Wait-PCClientExit -Plan $controllers -WaitSeconds $WaitSeconds)
             if($left.Count){Write-PCProgress $Progress 'force' ('正在结束你确认的'+$Plan.label+'控制界面残留进程…')}
@@ -235,7 +250,7 @@ function Invoke-PCClientClose {
             Write-PCProgress $Progress 'force' ('正在结束你确认的'+$Plan.label+'剩余进程…')
             # Close controllers before cores and brokers to reduce respawn races.
             # This remains the original identity-bound selection, never a new scan.
-            $ordered=@($Plan.members|Sort-Object @{Expression={if($_.name -match '^(?i:FlyingBird|clash-verge|Clash for Windows|tag)$'){0}elseif(Test-PCClientBroker $_.name){2}else{1}}},pid)
+            $ordered=@($Plan.members|Sort-Object @{Expression={if(Test-PCClientController $_.name $_.path){0}elseif(Test-PCClientBroker $_.name $_.path){2}else{1}}},pid)
             foreach($member in $ordered){Stop-PCClientProcess $member}
         }
         Write-PCProgress $Progress 'verify' '正在等待原客户端退出，并核对进程与端口状态…'

@@ -207,11 +207,12 @@ function Get-PCListenerCandidates {
         [Net.IPAddress]$ip=$null
         if(-not [Net.IPAddress]::TryParse([string]$row.LocalAddress,[ref]$ip)){continue}
         if(-not ([Net.IPAddress]::IsLoopback($ip) -or $ip.Equals([Net.IPAddress]::Any) -or $ip.Equals([Net.IPAddress]::IPv6Any))){continue}
-        if(-not $processCache.ContainsKey($id)){$process=Get-Process -Id $id -ErrorAction SilentlyContinue;$processCache[$id]=if($process){[string]$process.ProcessName}else{''}}
-        $name=$processCache[$id]
+        if(-not $processCache.ContainsKey($id)){$processCache[$id]=Get-Process -Id $id -ErrorAction SilentlyContinue}
+        $process=$processCache[$id];$name=[string](Get-PCValue $process 'ProcessName');$path=[string](Get-PCValue $process 'Path')
+        $family=Get-PCClientFamily $name $path
         $published=@($Endpoints|Where-Object { $_.local -and (Get-PCListenerState -Endpoint $_ -Listeners @($row)) -eq 'listening' }).Count -gt 0
-        $recognized=$name -match '(?i)clash|mihomo|sing-box|xray|v2ray|flyingbird|\btag\b|hysteria|tuic|naive|trojan|shadowsocks|sslocal'
-        if($published -or $recognized){[pscustomobject]@{port=[int]$row.LocalPort;address=[string]$row.LocalAddress;pid=$id;process=$name;published_by_system_proxy=$published;http_proxy_confirmed=$false}}
+        $recognized=($family -and -not(Test-PCClientBroker $name $path)) -or $name -match '(?i)clash|mihomo|sing-box|xray|v2ray|flyingbird|\btag\b|hysteria|tuic|naive|trojan|shadowsocks|sslocal'
+        if($published -or $recognized){[pscustomobject]@{port=[int]$row.LocalPort;address=[string]$row.LocalAddress;pid=$id;process=$name;client_label=if($family){$family.label}else{$null};client_family=if($family){$family.key}else{$null};published_by_system_proxy=$published;http_proxy_confirmed=$false}}
     }
 }
 function Get-PCSnapshot {

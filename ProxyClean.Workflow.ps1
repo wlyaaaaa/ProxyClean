@@ -141,6 +141,10 @@ function Format-PCInspection {
     foreach($e in @((Get-PCValue $Snapshot 'stored_endpoints' @())|Where-Object {$_.source -eq 'stored' -and $_.state -eq 'listening'})){
         $lines.Add('未启用的存储端点 '+$e.endpoint+'：对应端口正在监听，HTTP 能力仍需实际请求确认。')
     }
+    foreach($candidate in @(Get-PCValue $Snapshot 'listener_candidates' @())){
+        $owner=Get-PCValue $candidate 'client_label'
+        if($owner){$lines.Add('本机监听 '+$candidate.address+' 端口 '+$candidate.port+'：'+$owner+'（进程 '+$candidate.pid+'）；尚未确认 HTTP 代理能力。')}
+    }
     foreach($route in @(Get-PCValue $Snapshot 'routing_observations' @())){
         $metric=if($null -ne $route.combined_metric){[string]$route.combined_metric}else{'未确认'}
         $lines.Add($route.family+' 路由 '+$route.destination+' · '+$route.interface+'：路由与接口合计跃点 '+$metric+$(if($route.on_link){'；on-link（网卡直接路由）'}else{''})+$(if($route.tunnel_adapter_observed){'；隧道网卡'}else{''})+'。具体网站实际出口未探测。')
