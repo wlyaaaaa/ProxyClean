@@ -79,12 +79,16 @@ function Get-PCSafeProxyValue {
     param([AllowNull()][string]$Value)
     if([string]::IsNullOrWhiteSpace($Value)){return $null}
     $parts=@(foreach($e in @(Get-ProxyEndpoints $Value)){
-        if(-not $e.parsed){'<configured;unparsed>'}
-        else{
-            $hostText=if($e.local){if($e.family -eq 'InterNetworkV6'){'['+$e.host+']'}else{$e.host}}else{'<remote>'}
-            $prefix=if($e.mapping){$e.mapping+'='}else{''}
-            $prefix+$e.scheme+'://'+$hostText+':'+$e.port
-        }
+        # Preserve local diagnostic facts, including non-secret URL components.
+        $text=[regex]::Replace($e.raw,'(?i)^((?:[a-z][a-z0-9+.-]*=)?(?:[a-z][a-z0-9+.-]*://)?)[^/?#\s;]+@','$1')
+        [regex]::Replace($text,'([?&#])([^=&#]+)=([^&#]*)',[Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            $name=[Uri]::UnescapeDataString($match.Groups[2].Value)
+            if($name -match '^(?i:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|passwd|pwd|secret|client[_-]?secret|authorization|auth|credential|signature|sig)$'){
+                return $match.Groups[1].Value+$match.Groups[2].Value+'=<credentials>'
+            }
+            return $match.Value
+        })
     })
     $parts -join ';'
 }
@@ -275,7 +279,7 @@ function ConvertTo-PCPublicSnapshot {
         [pscustomobject]@{interface=[string]$route.InterfaceAlias;interface_index=$index;destination=[string]$route.DestinationPrefix;metric=[int]$route.RouteMetric;adapter_up=($ad.Count -eq 1 -and $ad[0].Status -eq 'Up');fake_ip_gateway=([string]$route.NextHop -match '^198\.1[89]\.');physical_fallback=Test-PCPhysicalRoute $route $Snapshot.adapters}
     })
     $tun=@($routeRows|Where-Object{$_.fake_ip_gateway -and $_.adapter_up})
-    [pscustomobject]@{schema='proxyclean.dynamic-status.v1';discovery='exact_endpoint_address_family_and_active_routes';observedUtc=$Snapshot.observedUtc;redacted=$true
+    [pscustomobject]@{schema='proxyclean.dynamic-status.v1';discovery='exact_endpoint_address_family_and_active_routes';observedUtc=$Snapshot.observedUtc;credentials_filtered=$true
         context=@{scope='current_windows_user';system_account=$Snapshot.isSystem;session_id=$Snapshot.sessionId;noninteractive=($Snapshot.sessionId -eq 0)}
         availability=$Snapshot.availability
         listener_candidates=@(Get-PCListenerCandidates -Listeners $Snapshot.listeners -Endpoints @($endpoints))

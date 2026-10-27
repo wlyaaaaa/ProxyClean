@@ -53,12 +53,26 @@ Describe 'Disconnected adapter diagnostics retain absence and unknown separately
         Mock Get-NetIPAddress -ModuleName ProxyClean.Common { @() }
         $r=Get-PCWifiSnapshot ([pscustomobject]@{Name='Fixture';InterfaceIndex=501;Status='Disconnected'})
         $r.ipv4_address_count|Should -Be 0;$r.address_observation|Should -Be 'observed';$r.dhcp|Should -Be 'unknown'
+        @($r.ipv4_addresses)|Should -HaveCount 0;@($r.ipv6_addresses)|Should -HaveCount 0
+    }
+    It 'retains the selected adapter addresses without including other adapters' {
+        Mock Get-NetIPInterface -ModuleName ProxyClean.Common { @() }
+        Mock Get-NetIPAddress -ModuleName ProxyClean.Common { @(
+            [pscustomobject]@{InterfaceIndex=501;AddressFamily='IPv4';IPAddress='192.0.2.10'}
+            [pscustomobject]@{InterfaceIndex=501;AddressFamily='IPv6';IPAddress='2001:db8::10'}
+            [pscustomobject]@{InterfaceIndex=502;AddressFamily='IPv4';IPAddress='192.0.2.11'}
+        ) }
+        $r=Get-PCWifiSnapshot ([pscustomobject]@{Name='Fixture';InterfaceIndex=501;Status='Up'})
+        $r.ipv4_address_count|Should -Be 1;$r.ipv6_address_count|Should -Be 1
+        $r.ipv4_addresses|Should -Contain '192.0.2.10';$r.ipv6_addresses|Should -Contain '2001:db8::10'
+        $r.actual_addresses_redacted|Should -BeFalse
     }
     It 'reports query failure as unknown rather than no address' {
         Mock Get-NetIPInterface -ModuleName ProxyClean.Common {throw 'fixture'}
         Mock Get-NetIPAddress -ModuleName ProxyClean.Common {throw 'fixture'}
         $r=Get-PCWifiSnapshot ([pscustomobject]@{Name='Fixture';InterfaceIndex=501;Status='Disconnected'})
         $r.ipv4_address_count|Should -BeNullOrEmpty;$r.address_observation|Should -Be 'unknown'
+        @($r.ipv4_addresses)|Should -HaveCount 0
     }
 }
 Describe 'Detailed network paths preserve site and address-family evidence' {
@@ -116,6 +130,9 @@ Describe 'Detailed network paths preserve site and address-family evidence' {
             $exit=@(Get-PCExitComparison $script:diagnosticSnapshot)
             $exit.Count|Should -Be 2
             $exit[1].source|Should -Be stored
+            $exit[0].ip|Should -Be '192.0.2.1';$exit[1].ip|Should -Be '192.0.2.1'
+            $exit[0].exit_group|Should -Be $exit[1].exit_group
+            $exit[0].address_redacted|Should -BeFalse;$exit[0].identifies_client|Should -BeFalse
         }
     }
     It 'does not guess HTTP support from an unpublished candidate listener' {

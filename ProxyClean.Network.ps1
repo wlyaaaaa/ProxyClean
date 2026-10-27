@@ -112,11 +112,11 @@ function Get-PCWifiSnapshot {
     param([Parameter(Mandatory)]$Adapter)
     $index=[int](Get-PCValue $Adapter 'InterfaceIndex' (Get-PCValue $Adapter 'ifIndex'))
     # Enumerate then select: absent addresses must not block repair selection.
-    $dhcp='unknown';$addressState='unknown';$v4=$null;$v6=$null
+    $dhcp='unknown';$addressState='unknown';$v4=$null;$v6=$null;$ipv4=@();$ipv6=@()
     try{$interfaces=@(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop|Where-Object InterfaceIndex -eq $index);if($interfaces.Count -eq 1){$dhcp=[string]$interfaces[0].Dhcp}}catch{}
-    try{$addresses=@(Get-NetIPAddress -ErrorAction Stop|Where-Object InterfaceIndex -eq $index);$v4=@($addresses|Where-Object AddressFamily -eq 'IPv4').Count;$v6=@($addresses|Where-Object AddressFamily -eq 'IPv6').Count;$addressState='observed'}catch{}
+    try{$addresses=@(Get-NetIPAddress -ErrorAction Stop|Where-Object InterfaceIndex -eq $index);$ipv4=@($addresses|Where-Object AddressFamily -eq 'IPv4'|ForEach-Object{[string]$_.IPAddress});$ipv6=@($addresses|Where-Object AddressFamily -eq 'IPv6'|ForEach-Object{[string]$_.IPAddress});$v4=$ipv4.Count;$v6=$ipv6.Count;$addressState='observed'}catch{}
     [pscustomobject]@{name=$Adapter.Name;interface_index=$index;status=[string]$Adapter.Status;physical=$true;dhcp=$dhcp
-        ipv4_address_count=$v4;ipv6_address_count=$v6;address_observation=$addressState;actual_addresses_redacted=$true}
+        ipv4_address_count=$v4;ipv6_address_count=$v6;ipv4_addresses=$ipv4;ipv6_addresses=$ipv6;address_observation=$addressState;actual_addresses_redacted=$false}
 }
 function Invoke-PCWifiReset {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
@@ -293,7 +293,7 @@ function Get-PCExitComparison {
             [Net.IPAddress]$ip=$null
             if(-not [Net.IPAddress]::TryParse($r.stdout.Trim(),[ref]$ip)){throw 'Exit probe did not return an IP address.'}
             $key=$ip.ToString();if(-not $groups.ContainsKey($key)){$groups[$key]='exit-group-'+($groups.Count+1)}
-            [pscustomobject]@{path=$path.name;source=(Get-PCValue $path 'source' 'process-default');status='observed';exit_group=$groups[$key];address_redacted=$true;identifies_client=$false}
-        }catch{[pscustomobject]@{path=$path.name;source=(Get-PCValue $path 'source' 'process-default');status='unknown';exit_group=$null;address_redacted=$true;identifies_client=$false}}
+            [pscustomobject]@{path=$path.name;source=(Get-PCValue $path 'source' 'process-default');status='observed';ip=$key;exit_group=$groups[$key];address_redacted=$false;identifies_client=$false}
+        }catch{[pscustomobject]@{path=$path.name;source=(Get-PCValue $path 'source' 'process-default');status='unknown';ip=$null;exit_group=$null;address_redacted=$false;identifies_client=$false}}
     }
 }

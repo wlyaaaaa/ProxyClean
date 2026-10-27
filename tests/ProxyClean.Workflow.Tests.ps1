@@ -51,7 +51,7 @@ Describe 'Readable inspection decisions reflect actual evidence' {
         $v=Get-PCCheckView $public $plan $undo
         $v.blocked|Should -BeTrue;$v.intent|Should -Be Undo
     }
-    It 'blocks new effects when the encrypted restore record cannot be read' {
+    It 'blocks new effects when the restore record cannot be read' {
         $undo=[pscustomobject]@{available=$false;phase='unreadable'}
         $v=Get-PCCheckView $public $plan $undo
         $v.blocked|Should -BeTrue;$v.intent|Should -Be Inspect
@@ -182,7 +182,7 @@ Describe 'GUI and CLI share the same controlled workflow' {
     }
     It 'does not overwrite unreadable undo records with a new repair recommendation' {
         InModuleScope ProxyClean.Common {
-            Mock Get-PCUndoSummary {throw 'fixture encrypted record unreadable'}
+            Mock Get-PCUndoSummary {throw 'fixture record unreadable'}
             $r=Invoke-PCWorkflow Inspect
             $r.undo.phase|Should -Be unreadable;$r.view.blocked|Should -BeTrue
         }

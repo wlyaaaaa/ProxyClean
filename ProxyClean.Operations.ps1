@@ -122,18 +122,27 @@ function Enter-PCLock {
     if(-not $acquired){$mutex.Dispose();throw 'Another ProxyClean operation is running for this Windows user.'}
     return $mutex
 }
-function Get-PCJournalPath {Join-Path $env:LOCALAPPDATA 'ProxyClean\last-operation.dpapi'}
+function Get-PCJournalPath {Join-Path $env:LOCALAPPDATA 'ProxyClean\last-operation.json'}
 function Read-PCJournalSlot {
     param([string]$Path)
-    $secure=ConvertTo-SecureString ([IO.File]::ReadAllText($Path))
-    try{$credential=New-Object Management.Automation.PSCredential('journal',$secure);$journal=$credential.GetNetworkCredential().Password|ConvertFrom-Json}finally{$secure.Dispose()}
+    $text=[IO.File]::ReadAllText($Path)
+    if($text.TrimStart().StartsWith('{')){$json=$text}
+    else{
+        $secure=ConvertTo-SecureString $text -ErrorAction Stop
+        try{$credential=New-Object Management.Automation.PSCredential('journal',$secure);$json=$credential.GetNetworkCredential().Password}finally{$secure.Dispose()}
+    }
+    $options=@{ErrorAction='Stop'}
+    if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$options.DateKind='String'}
+    $journal=$json|ConvertFrom-Json @options
     if($journal.schema -ne 'proxyclean.undo.v1' -or $journal.sid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value){throw 'The undo record does not belong to this Windows user.'}
     return $journal
 }
 function Get-PCJournalSlots {
     $path=Get-PCJournalPath
     $found=$false;$valid=@()
-    foreach($slot in @($path,($path+'.previous'))){
+    $paths=@($path,($path+'.previous'))
+    if([IO.Path]::GetExtension($path) -eq '.json'){$legacy=[IO.Path]::ChangeExtension($path,'.dpapi');$paths+=@($legacy,($legacy+'.previous'))}
+    foreach($slot in $paths){
         if(-not(Test-Path -LiteralPath $slot)){continue}
         $found=$true
         try{
@@ -145,23 +154,35 @@ function Get-PCJournalSlots {
     if($found -and -not $valid.Count){throw 'The undo record is unreadable for this Windows user.'}
     @($valid|Sort-Object generation -Descending)
 }
+function Write-PCJournalSlot {
+    param([string]$Path,[Parameter(Mandatory)]$Journal)
+    $text=$Journal|ConvertTo-Json -Depth 25 -Compress
+    $bytes=[Text.Encoding]::UTF8.GetBytes($text)
+    $stream=[IO.File]::Open($Path,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+    $saved=Read-PCJournalSlot $Path
+    if([IO.File]::ReadAllText($Path) -cne $text -or -not(Test-PCSameValue $saved $Journal)){throw 'Undo record write could not be verified.'}
+}
 function Save-PCJournal {
     param([Parameter(Mandatory)]$Journal)
     $path=Get-PCJournalPath;[IO.Directory]::CreateDirectory((Split-Path -Parent $path))|Out-Null
-    # Keep the latest valid slot intact until the other encrypted slot is flushed
-    # and read back. This also works on EFS directories where ReplaceFile fails.
+    # Keep the latest valid slot until the other slot is flushed and read back.
+    # Direct slot writes also work on EFS directories where ReplaceFile fails.
     $slots=@(Get-PCJournalSlots)
     $latest=if($slots.Count){$slots[0]}else{$null}
+    if($latest -and $latest.path -notin @($path,($path+'.previous'))){
+        Write-PCJournalSlot -Path $path -Journal $latest.journal
+        $latest.path=$path
+    }
     $destination=if($latest -and $latest.path -eq $path){$path+'.previous'}else{$path}
     $generation=if($latest){$latest.generation+1}else{1}
     $Journal|Add-Member -NotePropertyName storage_generation -NotePropertyValue $generation -Force
-    $secure=ConvertTo-SecureString ($Journal|ConvertTo-Json -Depth 25 -Compress) -AsPlainText -Force
-    try{$text=ConvertFrom-SecureString $secure}finally{$secure.Dispose()}
-    $bytes=[Text.Encoding]::UTF8.GetBytes($text)
-    $stream=[IO.File]::Open($destination,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
-    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
-    $saved=Read-PCJournalSlot $destination
-    if([IO.File]::ReadAllText($destination) -cne $text -or $saved.storage_generation -ne $generation){throw 'Undo record write could not be verified.'}
+    Write-PCJournalSlot -Path $destination -Journal $Journal
+    if([IO.Path]::GetExtension($path) -eq '.json' -and $latest){
+        # Both JSON slots have been verified; legacy slots can now be retired.
+        $legacy=[IO.Path]::ChangeExtension($path,'.dpapi')
+        foreach($slot in @($legacy,($legacy+'.previous'))){if(Test-Path -LiteralPath $slot){Remove-Item -LiteralPath $slot -ErrorAction Stop}}
+    }
 }
 function Get-PCJournal {
     $slots=@(Get-PCJournalSlots)

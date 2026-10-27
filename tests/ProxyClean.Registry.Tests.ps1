@@ -75,7 +75,7 @@ Describe 'Mocked client shutdown completes real isolated settings writes and und
         New-ItemProperty -LiteralPath $wininet -Name ProxyEnable -Value 1 -PropertyType DWord|Out-Null
         New-ItemProperty -LiteralPath $wininet -Name ProxyServer -Value '127.0.0.1:34567' -PropertyType String|Out-Null
         New-ItemProperty -LiteralPath $userenv -Name HTTP_PROXY -Value 'http://127.0.0.1:34567' -PropertyType String|Out-Null
-        InModuleScope ProxyClean.Common -Parameters @{WinInet=$wininet;UserEnv=$userenv;Journal=(Join-Path $TestDrive ([Guid]::NewGuid().ToString('N')+'.dpapi'))} {
+        InModuleScope ProxyClean.Common -Parameters @{WinInet=$wininet;UserEnv=$userenv;Journal=(Join-Path $TestDrive ([Guid]::NewGuid().ToString('N')+'.json'))} {
             param($WinInet,$UserEnv,$Journal)
             $script:registryFixturePaths=@{WinInet=$WinInet;UserEnv=$UserEnv};$script:registryFixtureJournal=$Journal
             Mock Get-PCRegistryPath {param($Area) $script:registryFixturePaths[$Area]}

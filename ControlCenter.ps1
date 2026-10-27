@@ -261,10 +261,10 @@ function Show-PCResult {
         'exits_observed'{
             $rows=@($Result.operation|ForEach-Object{
                 $name=if($_.path -eq 'process-default'){'本进程默认路径'}else{'指定本机代理端口 '+($_.path -replace '^forced-local-','')}
-                $state=if($_.status -eq 'observed'){'出口组 '+($_.exit_group -replace '^exit-group-','')}else{'未能确认'}
+                $state=if($_.status -eq 'observed'){$_.ip+' · 出口组 '+($_.exit_group -replace '^exit-group-','')}else{'未能确认'}
                 $name+'：'+$state
             })
-            Set-PCScreen '联网出口比较已结束' '组号相同表示这次观测到相同出口，不能据此识别具体客户端。未公开原始 IP 地址。' -Actions $rows
+            Set-PCScreen '联网出口比较已结束' '已显示本次观测到的出口 IP；组号相同表示出口相同，不能据此识别具体客户端。' -Actions $rows
         }
         'cancelled'{Set-PCScreen '检查已取消' '没有修改网络设置。点击重新检查即可继续。'}
         'failed'{
@@ -381,10 +381,10 @@ try{
     $pc.ui.ViewDetailsButton.Add_Click({$detailsWindow.Owner=$window;[void]$detailsWindow.ShowDialog()})
     $pc.ui.UndoButton.Add_Click({$pc.intent='Undo';Invoke-PCPrimary})
     $pc.ui.CancelButton.Add_Click({if($pc.job -and $pc.job.readOnly){$pc.job.control.cancel=$true;$pc.ui.CancelButton.IsEnabled=$false;Add-PCLog '正在取消，当前只读步骤结束后停止。'}})
-    $pc.ui.CopyButton.Add_Click({try{[Windows.Clipboard]::SetText([string]$pc.copy);Add-PCLog '已复制脱敏诊断。'}catch{Add-PCLog '剪贴板暂时被占用，请再点一次复制。'}})
+    $pc.ui.CopyButton.Add_Click({try{[Windows.Clipboard]::SetText([string]$pc.copy);Add-PCLog '已复制诊断（已过滤凭据）。'}catch{Add-PCLog '剪贴板暂时被占用，请再点一次复制。'}})
     $pc.ui.DirectButton.Add_Click({$pc.ui.PageScroll.ScrollToTop();Start-PCWork Inspect @{Direct=$true}})
     $pc.ui.ConnectivityButton.Add_Click({Start-PCWork Connectivity})
-    $pc.ui.ExitButton.Add_Click({if(Confirm-PCAction '将请求 ipify 的公网 IP 查询服务，并比较默认路径与可识别的本机代理路径。只显示匿名分组，不修改设置。继续？' '比较联网出口'){Start-PCWork ExitProbe}})
+    $pc.ui.ExitButton.Add_Click({if(Confirm-PCAction '将请求 ipify 的公网 IP 查询服务，并比较默认路径与可识别的本机代理路径。会显示出口 IP 与分组，不修改设置。继续？' '比较联网出口'){Start-PCWork ExitProbe}})
     $pc.ui.ClientCombo.Add_SelectionChanged({if($pc.ui.ClientCombo.SelectedItem -and $pc.ui.ClientCombo.SelectedItem.port){$pc.ui.PortInput.Text=[string]$pc.ui.ClientCombo.SelectedItem.port}})
     $pc.ui.PortInput.Add_TextChanged({if($pc.intent -eq 'Stop'){$pc.pending=$null;Set-PCScreen '端口已改变，请重新查看结束范围' '新的端口尚未确认，本次不会结束任何程序。' -Tone warning}})
     $pc.ui.StopPreviewButton.Add_Click({

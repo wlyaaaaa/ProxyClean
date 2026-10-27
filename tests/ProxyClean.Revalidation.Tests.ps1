@@ -38,7 +38,7 @@ Describe 'Status entry does not silently perform external exit probes' {
    $script:entry=[scriptblock]::Create($text)
    Mock Get-PCSnapshot { [pscustomobject]@{availability=[pscustomobject]@{listeners='observed'}} }
    Mock ConvertTo-PCPublicSnapshot { [pscustomobject]@{conclusion=[pscustomobject]@{current_default='not_probed'};exit_probes=@()} }
-   Mock Get-PCExitComparison { [pscustomobject]@{status='fixture';address_redacted=$true} }
+   Mock Get-PCExitComparison { [pscustomobject]@{status='fixture';address_redacted=$false} }
   }
  }
  It 'defaults to zero external probes' {

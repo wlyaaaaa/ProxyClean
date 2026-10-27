@@ -40,10 +40,26 @@ Describe 'One parser for all proxy operations' {
         $r=Remove-PCProxyEndpoint 'http=;https=localhost:34567' 34567
         $r.changed|Should -BeFalse
     }
-    It 'never displays credentials, path parameters or private remote hostnames' {
-        $safe=Get-PCSafeProxyValue 'https://fixture-user:fixture-secret@proxy.example.test:8443/private?token=fixture-secret#private'
-        $safe|Should -Not -Match 'fixture|example|private|token|@'
-        $safe|Should -Match '<remote>:8443'
+    It 'preserves ordinary URL components while filtering proxy credentials and tokens' {
+        $safe=Get-PCSafeProxyValue 'https://fixture-user:fixture-secret@proxy.example.test:8443/private?region=test&token=fixture-secret#details'
+        $safe|Should -Not -Match 'fixture-user|fixture-secret|@'
+        $safe|Should -BeExactly 'https://proxy.example.test:8443/private?region=test&token=<credentials>#details'
+    }
+    It 'retains ordinary remote IPv4, IPv6 and malformed values' -ForEach @(
+        @{value='https=192.0.2.10:8443';expected='https=192.0.2.10:8443'}
+        @{value='http://[2001:db8::10]:8080/path';expected='http://[2001:db8::10]:8080/path'}
+        @{value='http=';expected='http='}
+        @{value='http://proxy.example.test:8443?contact=ops@example.test&custom=ordinary';expected='http://proxy.example.test:8443?contact=ops@example.test&custom=ordinary'}
+    ) {
+        Get-PCSafeProxyValue $value|Should -BeExactly $expected
+    }
+    It 'filters userinfo without requiring an explicit URI scheme' {
+        Get-PCSafeProxyValue 'https=fixture-user:fixture-secret@proxy.example.test:8443'|Should -BeExactly 'https=proxy.example.test:8443'
+    }
+    It 'filters malformed userinfo and encoded credential parameter names' {
+        $safe=Get-PCSafeProxyValue 'http://fixture-user:fixture@secret@proxy.example.test:8443?%74oken=fixture-secret&custom=ordinary'
+        $safe|Should -BeExactly 'http://proxy.example.test:8443?%74oken=<credentials>&custom=ordinary'
+        $safe|Should -Not -Match 'fixture-user|fixture-secret|fixture@secret'
     }
 }
 Describe 'Listener matching includes address family and exact binding' {
@@ -68,6 +84,15 @@ Describe 'Listener matching includes address family and exact binding' {
     }
 }
 Describe 'Repair planning and public diagnostics are consistent' {
+    It 'retains ordinary addresses throughout the snapshot without exposing credentials' {
+        $s=New-FixtureSnapshot -Proxy 'http://fixture-user:fixture-secret@proxy.example.test:8443/diagnostic?region=test&token=fixture-secret'
+        $s.environment=@([pscustomobject]@{name='HTTP_PROXY';scope='User';value='http://fixture-user:fixture-secret@192.0.2.10:8080'})
+        $s.git=@([pscustomobject]@{key='http.proxy';values=@('http://fixture-user:fixture-secret@proxy.example.test:8080')})
+        $result=ConvertTo-PCPublicSnapshot $s
+        $result.system_proxy.server|Should -BeExactly 'http://proxy.example.test:8443/diagnostic?region=test&token=<credentials>'
+        $result.environment[0].endpoint|Should -BeExactly 'http://192.0.2.10:8080'
+        ($result|ConvertTo-Json -Depth 12)|Should -Not -Match 'fixture-user|fixture-secret'
+    }
     It 'plans a scoped mapping change rather than disabling the whole mixed proxy' {
         $plan=Get-PCRepairPlan -Snapshot (New-FixtureSnapshot) -Port 34567
         $plan.steps|Should -HaveCount 1
@@ -119,7 +144,7 @@ Describe 'Durable one-operation undo with injected failures' {
     BeforeEach {
         InModuleScope ProxyClean.Common -Parameters @{Root=$TestDrive} {
             param($Root)
-            $script:fixtureJournal=Join-Path $Root ([Guid]::NewGuid().ToString('N')+'.dpapi')
+            $script:fixtureJournal=Join-Path $Root ([Guid]::NewGuid().ToString('N')+'.json')
             $script:fixtureValues=@{
                 HTTP_PROXY=[pscustomobject][ordered]@{exists=$true;value='http://fixture-secret@localhost:34567';kind='String'}
                 HTTPS_PROXY=[pscustomobject][ordered]@{exists=$true;value='http://localhost:34568';kind='String'}
@@ -145,7 +170,8 @@ Describe 'Durable one-operation undo with injected failures' {
         InModuleScope ProxyClean.Common {
             (Invoke-PCRepairPlan $script:fixturePlan -Confirm:$false).status|Should -Be 'applied'
             (Get-PCJournal).phase|Should -Be 'completed'
-            [IO.File]::ReadAllText($script:fixtureJournal)|Should -Not -Match 'fixture-secret|HTTP_PROXY'
+            $saved=[IO.File]::ReadAllText($script:fixtureJournal)|ConvertFrom-Json
+            @($saved.steps|Where-Object name -eq 'HTTP_PROXY')[0].before.value|Should -BeExactly 'http://fixture-secret@localhost:34567'
             (Invoke-PCUndo -Confirm:$false).status|Should -Be 'recovered'
             $script:fixtureValues.HTTP_PROXY.exists|Should -BeTrue
             (Get-PCJournal).phase|Should -Be 'undone'
