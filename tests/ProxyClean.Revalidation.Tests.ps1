@@ -37,7 +37,8 @@ Describe 'Status entry does not silently perform external exit probes' {
    $text=[IO.File]::ReadAllText($Path);$text=[regex]::Replace($text,'(?m)^Import-Module[^\r\n]*','')
    $script:entry=[scriptblock]::Create($text)
    Mock Get-PCSnapshot { [pscustomobject]@{availability=[pscustomobject]@{listeners='observed'}} }
-   Mock ConvertTo-PCPublicSnapshot { [pscustomobject]@{conclusion=[pscustomobject]@{current_default='not_probed'};exit_probes=@()} }
+   Mock ConvertTo-PCPublicSnapshot { [pscustomobject]@{conclusion=[pscustomobject]@{current_default='not_probed'};exit_probes=@();system_proxy=@{}} }
+   Mock Get-PCClientStatus { [pscustomobject]@{client_inventory=@()} }
    Mock Get-PCExitComparison { [pscustomobject]@{status='fixture';address_redacted=$false} }
   }
  }

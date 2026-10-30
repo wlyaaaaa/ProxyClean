@@ -15,7 +15,7 @@ function Get-PCClientFamily {
 }
 function Get-PCClientInventory {
     [CmdletBinding()]
-    param([AllowEmptyCollection()][object[]]$Listeners=@(),[AllowEmptyCollection()][object[]]$Endpoints=@(),[AllowEmptyCollection()][object[]]$Processes=@(),[switch]$RequireComplete)
+    param([AllowEmptyCollection()][object[]]$Listeners=@(),[AllowEmptyCollection()][object[]]$Endpoints=@(),[AllowEmptyCollection()][object[]]$Processes=@(),[switch]$RequireComplete,[switch]$IncludeAllSessions)
     if(-not $PSBoundParameters.ContainsKey('Processes')){$Processes=@(Get-CimInstance Win32_Process -ErrorAction Stop)}
     # Optional endpoint inputs can be null; absence is not a dead endpoint.
     $Endpoints=@($Endpoints|Where-Object{$null -ne $_})
@@ -32,7 +32,7 @@ function Get-PCClientInventory {
     $all=@{};foreach($p in $Processes){$all[[int]$p.ProcessId]=$p}
     $groups=@{}
     foreach($p in $Processes){
-        if([int]$p.ProcessId -le 4 -or [int]$p.ProcessId -eq $PID -or [int]$p.SessionId -notin @(0,$session)){continue}
+        if([int]$p.ProcessId -le 4 -or [int]$p.ProcessId -eq $PID -or (-not $IncludeAllSessions -and [int]$p.SessionId -notin @(0,$session))){continue}
         $family=Get-PCClientFamily $p.Name $p.ExecutablePath
         if(-not $family){continue}
         # A generic core is assigned to its actual controller, never to a brand
@@ -45,7 +45,7 @@ function Get-PCClientInventory {
             $visited+=@($parentId);$parent=$all[$parentId]
             $parentBorn=Get-PCValue $parent 'CreationDate'
             if($childBorn -and $parentBorn -and (ConvertTo-PCIdentityUtc $parentBorn) -cgt (ConvertTo-PCIdentityUtc $childBorn)){break}
-            if([int]$parent.SessionId -notin @(0,$session)){break}
+            if(-not $IncludeAllSessions -and [int]$parent.SessionId -notin @(0,$session)){break}
             $owner=Get-PCClientFamily $parent.Name $parent.ExecutablePath
             if($owner -and $owner.key -in @('flyingbird','clash-verge','clash-windows','tag')){
                 $family=$owner;$coreRoot=$parent
