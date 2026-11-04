@@ -132,7 +132,7 @@ Describe 'Broker restart verification is bounded and precedes cleanup' {
             $parameter.DefaultValue.Value|Should -Be 10000
             $script:elapsed=0
             Mock Start-Sleep {param($Milliseconds)$script:elapsed+=$Milliseconds}
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
             Mock Get-PCLocalPortListeners {@()}
             Mock Get-PCClientInventory {if($script:elapsed -ge 6000){[pscustomobject]@{key='clash-verge'}}}
             {Assert-PCClientStayedClosed ([pscustomobject]@{key='clash-verge';ports=@()})}|Should -Throw '*CLIENT_RESTARTED*'
@@ -141,7 +141,7 @@ Describe 'Broker restart verification is bounded and precedes cleanup' {
     }
     It 'does not confuse another running client with the client being closed' {
         InModuleScope ProxyClean.Common {
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
             Mock Get-PCLocalPortListeners {@()}
             Mock Get-PCClientInventory {[pscustomobject]@{key='flyingbird'}}
             {Assert-PCClientStayedClosed ([pscustomobject]@{key='clash-verge';ports=@(12345)}) -Milliseconds 0}|Should -Not -Throw
@@ -152,7 +152,7 @@ Describe 'Broker restart verification is bounded and precedes cleanup' {
     }
     It 'allows a known replacement client to take over the old port without clearing it' {
         InModuleScope ProxyClean.Common {
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
             Mock Get-PCLocalPortListeners {[pscustomobject]@{OwningProcess=891001;LocalPort=12345}}
             Mock Get-PCClientInventory {[pscustomobject]@{key='flyingbird';members=@([pscustomobject]@{ProcessId=891001})}}
             $p=[pscustomobject]@{key='clash-verge';ports=@(12345)}

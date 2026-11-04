@@ -110,7 +110,7 @@ function Assert-PCClientStayedClosed {
     param([Parameter(Mandatory)]$Plan,[ValidateRange(0,30000)][int]$Milliseconds=10000)
     $timer=[Diagnostics.Stopwatch]::StartNew()
     do{
-        $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+        $listeners=@(Get-PCTcpListener -ErrorAction Stop)
         $inventory=@(Get-PCClientInventory -Listeners $listeners)
         if(Test-PCSelectedClientPresent -Plan $Plan -Inventory $inventory){throw 'PC_CLIENT_RESTARTED'}
         if(@((Get-PCClientPortState -Plan $Plan -Inventory $inventory).unknown).Count){throw 'PC_CLIENT_PORT_OCCUPIED'}

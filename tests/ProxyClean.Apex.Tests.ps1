@@ -165,7 +165,7 @@ Describe 'Apex close preserves its original launch broker and closes both cores'
             Mock Restore-PCClientService {$script:apexEvents.Add('service-restore');$script:apexState='Running'}
             Mock Clear-PCClientRunIntent {}
             Mock Assert-PCClientStayedClosed {}
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
             Mock Get-PCClientInventory {@()}
             Mock Get-PCLocalPortListeners {@()}
             Mock Get-PCSnapshot {[pscustomobject]@{fixture=$true}}

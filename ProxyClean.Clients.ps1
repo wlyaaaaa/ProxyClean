@@ -260,7 +260,7 @@ function Invoke-PCClientClose {
             if(-not $remaining.Count -or [DateTimeOffset]::UtcNow -ge $deadline){break}
             Start-Sleep -Milliseconds 200
         }while($true)
-        $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+        $listeners=@(Get-PCTcpListener -ErrorAction Stop)
         $inventory=@(Get-PCClientInventory -Listeners $listeners)
         $sameClient=Test-PCSelectedClientPresent -Plan $Plan -Inventory $inventory
         $portState=Get-PCClientPortState -Plan $Plan -Inventory $inventory
@@ -279,7 +279,7 @@ function Invoke-PCClientClose {
         Write-PCProgress $Progress 'verify' '正在确认客户端保持关闭、辅助服务没有重新启动核心…'
         Assert-PCClientStayedClosed -Plan $Plan
         Write-PCProgress $Progress 'verify' '客户端已退出，正在复查并清理它留下的代理引用…'
-        $portState=Get-PCClientPortState -Plan $Plan -Inventory @(Get-PCClientInventory -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop))
+        $portState=Get-PCClientPortState -Plan $Plan -Inventory @(Get-PCClientInventory -Listeners @(Get-PCTcpListener -ErrorAction Stop))
         if(@($portState.unknown).Count){throw 'PC_CLIENT_PORT_OCCUPIED'}
         $snapshot=Get-PCSnapshot -Progress $Progress
         $settings=[pscustomobject]@{status='no_changes';changed=0}
@@ -296,7 +296,7 @@ function Invoke-PCClientClose {
         }
         Write-PCProgress $Progress 'connectivity' '正在重新检查代理状态，并测试基础网页连接…'
         $after=ConvertTo-PCPublicSnapshot (Get-PCSnapshot -Progress $Progress)
-        $still=@(Get-PCClientInventory -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop))
+        $still=@(Get-PCClientInventory -Listeners @(Get-PCTcpListener -ErrorAction Stop))
         $probe=if($SkipConnectivityChecks){[pscustomobject]@{status='not_tested'}}else{Test-PCConnectivity}
         $limits=New-Object 'Collections.Generic.List[string]'
         foreach($service in $restoredServices){

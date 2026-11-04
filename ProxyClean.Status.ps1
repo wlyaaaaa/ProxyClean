@@ -53,11 +53,7 @@ function Get-PCDefaultSnapshot([string]$UserSid) {
         $ip=$_.GetIPProperties();$index=0;try{$index=$ip.GetIPv4Properties().Index}catch{}
         [pscustomobject]@{Name=$_.Name;InterfaceDescription=$_.Description;Status=$_.OperationalStatus.ToString();InterfaceIndex=$index;addresses=@($ip.UnicastAddresses|ForEach-Object{$_.Address.IPAddressToString})}
     });$availability.adapters='observed'}catch{}
-    try{$lines=& "$env:SystemRoot\System32\netstat.exe" -ano -p tcp;if($LASTEXITCODE){throw 'listeners'}
-        $listeners=@(foreach($line in $lines){if($line -match '^\s*TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$'){
-            [pscustomobject]@{LocalAddress=$Matches[1].Trim('[',']');LocalPort=[int]$Matches[2];OwningProcess=[int]$Matches[3]}
-        }});$availability.listeners='observed'
-    }catch{}
+    try{$listeners=@(Get-PCTcpListener -ErrorAction Stop);$availability.listeners='observed'}catch{}
     try{$lines=& "$env:SystemRoot\System32\route.exe" print;if($LASTEXITCODE){throw 'routes'}
         $routes=@(foreach($line in $lines){
             if($line -match '^\s*(0\.0\.0\.0|128\.0\.0\.0)\s+(0\.0\.0\.0|128\.0\.0\.0)\s+(\S+)\s+(\S+)\s+(\d+)\s*$'){

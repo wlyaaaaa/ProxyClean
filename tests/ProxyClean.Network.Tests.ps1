@@ -1,5 +1,28 @@
 #Requires -Version 5.1
 BeforeAll { Import-Module (Join-Path $PSScriptRoot '..\ProxyClean.Common.psm1') -Force }
+Describe 'Native TCP listener table' {
+    It 'reports listening sockets with their owner and excludes sockets that are only bound' {
+        $listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
+        $bound=[Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork,[Net.Sockets.SocketType]::Stream,[Net.Sockets.ProtocolType]::Tcp)
+        try {
+            $listener.Start()
+            $listenerPort=$listener.LocalEndpoint.Port
+            $bound.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback,0))
+            $boundPort=$bound.LocalEndPoint.Port
+            $rows=@(Get-PCTcpListener -Port $listenerPort -ErrorAction Stop)
+            $rows|Should -HaveCount 1
+            $rows[0].LocalAddress|Should -Be '127.0.0.1'
+            $rows[0].LocalPort|Should -Be $listenerPort
+            $rows[0].OwningProcess|Should -Be $PID
+            @(Get-PCTcpListener -Port $boundPort -ErrorAction Stop)|Should -HaveCount 0
+            $listener.Stop()
+            @(Get-PCTcpListener -Port $listenerPort -ErrorAction Stop)|Should -HaveCount 0
+        } finally {
+            $listener.Stop()
+            $bound.Dispose()
+        }
+    }
+}
 Describe 'WiFi selection does not assume a working connection' {
     It 'selects an explicitly named disconnected adapter with no IP metadata' {
         $a=Get-PCWifiAdapter -InterfaceAlias 'Custom adapter' -Adapters @([pscustomobject]@{Name='Custom adapter';HardwareInterface=$true;Status='Down';InterfaceIndex=3})
@@ -69,7 +92,7 @@ Describe 'Closing a port is not closing a guessed client family' {
                 [pscustomobject]@{LocalPort=34567;LocalAddress='192.0.2.10';OwningProcess=502}
             )
             $script:fixtureIdentityChanged=$false
-            Mock Get-NetTCPConnection {$script:fixtureListeners}
+            Mock Get-PCTcpListener {$script:fixtureListeners}
             Mock Get-PCProcessIdentity {param($ProcessId) [pscustomobject]@{pid=$ProcessId;name='fixture-client';start_utc=if($script:fixtureIdentityChanged){'2026-01-02'}else{'2026-01-01'};path='C:\fixture\client.exe';session=1}}
             Mock Stop-Process {param($Id) $script:fixtureListeners=@($script:fixtureListeners|Where-Object { $_.OwningProcess -notin @($Id) })}
             Mock Get-PCSnapshot {[pscustomobject]@{

@@ -88,7 +88,7 @@ Describe 'Endpoint safety is revalidated immediately before effects' {
             param($FixturePlan)
             $script:wfPlan=$FixturePlan
             Mock Get-PCRegistryValue {$script:wfPlan.steps[0].preview_server}
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
         }
     }
     It 'permits the still-dead exact local endpoint' {
@@ -96,13 +96,13 @@ Describe 'Endpoint safety is revalidated immediately before effects' {
     }
     It 'refuses an endpoint that has restarted after preview' {
         InModuleScope ProxyClean.Common {
-            Mock Get-NetTCPConnection {@([pscustomobject]@{LocalPort=34567;LocalAddress='127.0.0.1'})}
+            Mock Get-PCTcpListener {@([pscustomobject]@{LocalPort=34567;LocalAddress='127.0.0.1'})}
             {Assert-PCStepCondition $script:wfPlan.steps[0]}|Should -Throw '*PC_PROXY_RESTARTED*'
         }
     }
     It 'refuses a listener lookup failure rather than interpreting it as dead' {
         InModuleScope ProxyClean.Common {
-            Mock Get-NetTCPConnection {throw 'fixture query failure'}
+            Mock Get-PCTcpListener {throw 'fixture query failure'}
             {Assert-PCStepCondition $script:wfPlan.steps[0]}|Should -Throw '*PC_LISTENER_UNKNOWN*'
         }
     }
@@ -118,7 +118,7 @@ Describe 'Endpoint safety is revalidated immediately before effects' {
             Mock Get-PCJournal {[pscustomobject]@{phase='completed'}}
             Mock Save-PCJournal {}
             Mock Set-PCResourceValue {}
-            Mock Get-NetTCPConnection {@([pscustomobject]@{LocalPort=34567;LocalAddress='127.0.0.1'})}
+            Mock Get-PCTcpListener {@([pscustomobject]@{LocalPort=34567;LocalAddress='127.0.0.1'})}
             $r=Invoke-PCRepairPlan $script:wfPlan -Confirm:$false
             $r.status|Should -Be plan_changed;$r.changed|Should -Be 0
             Should -Invoke Save-PCJournal -Times 0
@@ -127,7 +127,7 @@ Describe 'Endpoint safety is revalidated immediately before effects' {
     }
     It 'preserves an IPv6 wildcard listener whose IPv4 acceptance is unknown' {
         InModuleScope ProxyClean.Common {
-            Mock Get-NetTCPConnection {@([pscustomobject]@{LocalPort=34567;LocalAddress='::'})}
+            Mock Get-PCTcpListener {@([pscustomobject]@{LocalPort=34567;LocalAddress='::'})}
             {Assert-PCStepCondition $script:wfPlan.steps[0]}|Should -Throw '*PC_PROXY_RESTARTED*'
         }
     }
@@ -135,7 +135,7 @@ Describe 'Endpoint safety is revalidated immediately before effects' {
         $portPlan=Get-PCRepairPlan $s -Port 34567
         InModuleScope ProxyClean.Common -Parameters @{Step=$portPlan.steps[0]} {
             param($Step)
-            Mock Get-NetTCPConnection {@([pscustomobject]@{LocalPort=34567;LocalAddress='0.0.0.0'})}
+            Mock Get-PCTcpListener {@([pscustomobject]@{LocalPort=34567;LocalAddress='0.0.0.0'})}
             {Assert-PCStepCondition $Step}|Should -Throw '*PC_PROXY_RESTARTED*'
         }
     }
@@ -143,9 +143,9 @@ Describe 'Endpoint safety is revalidated immediately before effects' {
         $directPlan=Get-PCRepairPlan $s -Direct
         InModuleScope ProxyClean.Common -Parameters @{Step=$directPlan.steps[0]} {
             param($Step)
-            Mock Get-NetTCPConnection {throw 'must not query for explicit direct intent'}
+            Mock Get-PCTcpListener {throw 'must not query for explicit direct intent'}
             {Assert-PCStepCondition $Step}|Should -Not -Throw
-            Should -Invoke Get-NetTCPConnection -Times 0
+            Should -Invoke Get-PCTcpListener -Times 0
         }
     }
 }

@@ -154,7 +154,7 @@ Describe 'All selected client ports are one reversible settings operation' {
         InModuleScope ProxyClean.Common -Parameters @{Step=$p.steps[0]} {
             param($Step)
             Mock Get-PCRegistryValue {$Step.preview_server}
-            Mock Get-NetTCPConnection {@([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=34562})}
+            Mock Get-PCTcpListener {@([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=34562})}
             {Assert-PCStepCondition $Step}|Should -Throw '*PC_PROXY_RESTARTED*'
         }
     }
@@ -173,7 +173,7 @@ Describe 'One-click close handles verified residuals and reports partial results
             Mock Stop-PCClientService {}
             Mock Assert-PCClientStayedClosed {}
             Mock Stop-Process {}
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
             Mock Get-PCClientInventory {@()}
             Mock Get-PCLocalPortListeners {@()}
             Mock Get-PCSnapshot {$script:clientSnapshot}

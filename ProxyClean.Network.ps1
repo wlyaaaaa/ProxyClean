@@ -21,7 +21,7 @@ function Test-PCAdministrator {
 function Get-PCLocalPortListeners {
     [CmdletBinding()]
     param([ValidateRange(1,65535)][int]$Port)
-    @(Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object{
+    @(Get-PCTcpListener -ErrorAction Stop|Where-Object{
         if([int]$_.LocalPort -ne $Port){return $false}
         [Net.IPAddress]$address=$null
         [Net.IPAddress]::TryParse([string]$_.LocalAddress,[ref]$address) -and

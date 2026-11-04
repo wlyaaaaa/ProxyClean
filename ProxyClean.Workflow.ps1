@@ -51,7 +51,7 @@ function Assert-PCStepCondition {
     $values=@(Get-PCValue $Step 'required_dead_values' @())
     $ports=@(Get-PCValue $Step 'required_closed_ports' @());$oldPort=[int](Get-PCValue $Step 'required_closed_port' 0);if($oldPort){$ports+=@($oldPort)}
     if(-not $values.Count -and -not $ports.Count){return}
-    try{$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)}catch{throw 'PC_LISTENER_UNKNOWN'}
+    try{$listeners=@(Get-PCTcpListener -ErrorAction Stop)}catch{throw 'PC_LISTENER_UNKNOWN'}
     if($ports.Count){
         foreach($row in $listeners){
             if([int]$row.LocalPort -notin $ports){continue}

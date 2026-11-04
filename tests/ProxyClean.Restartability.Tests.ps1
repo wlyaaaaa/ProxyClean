@@ -20,7 +20,7 @@ Describe 'Closing a client preserves its launch broker' {
             Mock Assert-PCClientStayedClosed {}
             Mock Start-Service {throw 'Unexpected real service action'}
             Mock Stop-Process {$script:alive=$false}
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
             Mock Get-PCClientInventory {@()}
             Mock Get-PCLocalPortListeners {@()}
             Mock Get-PCSnapshot {[pscustomobject]@{fixture=$true}}

@@ -87,7 +87,7 @@ Describe 'Mocked client shutdown completes real isolated settings writes and und
             Mock Assert-PCClientStayedClosed {}
             Mock Stop-Process {throw 'Real process termination is prohibited in this test.'}
             Mock Invoke-PCNative {throw 'Native process execution is prohibited in this test.'}
-            Mock Get-NetTCPConnection {@()}
+            Mock Get-PCTcpListener {@()}
             Mock Get-PCClientInventory {@()}
             Mock Get-PCLocalPortListeners {@()}
             Mock Get-CimInstance {@()}

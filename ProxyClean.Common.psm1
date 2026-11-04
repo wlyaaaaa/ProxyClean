@@ -5,6 +5,52 @@ $ErrorActionPreference='Stop'
 # PSModulePath (a PowerShell 7 parent may otherwise expose its Core DLL to 5.1).
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 
+function Get-PCTcpListener {
+    [CmdletBinding()]
+    param([int[]]$Port=@())
+    try {
+        if(-not ('ProxyCleanListenerTableV1' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Net;
+using System.Runtime.InteropServices;
+using System.Collections.Generic;
+public sealed class ProxyCleanListenerRowV1 { public string LocalAddress; public int LocalPort; public int OwningProcess; }
+public static class ProxyCleanListenerTableV1 {
+    [DllImport("iphlpapi.dll")] static extern uint GetExtendedTcpTable(IntPtr data, ref uint size, bool order, int family, int table, uint reserved);
+    public static ProxyCleanListenerRowV1[] Read(int family) {
+        uint size=0, initial=GetExtendedTcpTable(IntPtr.Zero,ref size,false,family,3,0);
+        if(initial!=0 && initial!=122)throw new InvalidOperationException("native_listener_read_failed");
+        for(int attempt=0;attempt<3;attempt++) {
+            if(size<4 || size>16777216)throw new InvalidOperationException("native_listener_size_invalid");
+            uint capacity=size; IntPtr data=Marshal.AllocHGlobal((int)capacity);
+            try {
+                uint result=GetExtendedTcpTable(data,ref size,false,family,3,0);
+                if(result==122)continue;
+                if(result!=0 || size<4 || size>capacity)throw new InvalidOperationException("native_listener_read_failed");
+                bool v6=family==23; int width=v6 ? 56 : 24, count=Marshal.ReadInt32(data);
+                if(count<0 || 4L+(long)width*count>size)throw new InvalidOperationException("native_listener_length_invalid");
+                var rows=new List<ProxyCleanListenerRowV1>();
+                for(int i=0;i<count;i++) {
+                    int row=4+width*i, address=row+(v6 ? 0 : 4), port=row+(v6 ? 20 : 8);
+                    byte[] bytes=new byte[v6 ? 16 : 4]; Marshal.Copy(IntPtr.Add(data,address),bytes,0,bytes.Length);
+                    rows.Add(new ProxyCleanListenerRowV1 {
+                        LocalAddress=v6 ? new IPAddress(bytes,(uint)Marshal.ReadInt32(data,row+16)).ToString() : new IPAddress(bytes).ToString(),
+                        LocalPort=(Marshal.ReadByte(data,port)<<8)|Marshal.ReadByte(data,port+1),
+                        OwningProcess=Marshal.ReadInt32(data,row+(v6 ? 52 : 20)) });
+                }
+                return rows.ToArray();
+            } finally { Marshal.FreeHGlobal(data); }
+        }
+        throw new InvalidOperationException("native_listener_retry_exhausted");
+    }
+}
+'@ -ErrorAction Stop
+        }
+        $rows=@([ProxyCleanListenerTableV1]::Read(2))+@([ProxyCleanListenerTableV1]::Read(23))
+        $rows|Where-Object {-not $Port.Count -or $_.LocalPort -in $Port}
+    } catch { Write-Error -ErrorRecord $_ }
+}
 function Get-PCValue {
     param($Object,[string]$Name,$Default=$null)
     if($null -ne $Object -and $Object.PSObject.Properties[$Name]){return $Object.$Name}
@@ -120,7 +166,7 @@ function Test-LocalProxyDead {
     [CmdletBinding()]
     param([string]$Value,[AllowNull()][object[]]$Listeners=$null,[bool]$QuerySucceeded=$true)
     if(-not $PSBoundParameters.ContainsKey('Listeners')){
-        try{$Listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop)}catch{$QuerySucceeded=$false;$Listeners=@()}
+        try{$Listeners=@(Get-PCTcpListener -ErrorAction Stop)}catch{$QuerySucceeded=$false;$Listeners=@()}
     }
     $endpoints=@(Get-ProxyEndpoints $Value)
     if(-not $endpoints.Count){return $false}
@@ -225,7 +271,7 @@ function Get-PCSnapshot {
     Write-PCProgress $Progress 'listeners' '正在检查本机代理是否仍在运行…'
     $availability=[ordered]@{}
     $listeners=@();$adapters=@();$routes=@();$diagnosticRoutes=@();$ipInterfaces=@();$proxy=$null;$environment=@();$git=@()
-    try{$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop);$availability.listeners='observed'}catch{$availability.listeners='unknown'}
+    try{$listeners=@(Get-PCTcpListener -ErrorAction Stop);$availability.listeners='observed'}catch{$availability.listeners='unknown'}
     Write-PCProgress $Progress 'network' '正在检查网卡与默认连接…'
     try{$adapters=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop);$availability.adapters='observed'}catch{$availability.adapters='unknown'}
     try{
