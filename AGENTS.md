@@ -18,5 +18,5 @@
 
 ## 验证
 
-Pester 5.7.1 及以上必须在 Windows PowerShell 5.1 和 PowerShell 7 两个宿主中都能找到；分别运行 `ProxyClean.test.ps1`，网络子集运行 `ProxyClean.test.ps1 -Suite Network`。测试使用隔离注册表、临时 Git 配置及替身，不关闭现用代理。
+Pester 5.7.1 及以上必须在 Windows PowerShell 5.1 和 PowerShell 7 两个宿主中都能找到；分别运行 `ProxyClean.test.ps1`，网络子集运行 `ProxyClean.test.ps1 -Suite Network`。两个宿主的全套按顺序跑，不并行：产品锁 `Global\ProxyClean-<SID>` 跨进程共用，并行会撞锁误报失败。测试使用隔离注册表、临时 Git 配置及替身，不关闭现用代理。
 `ControlCenter.ps1 -SelfTest` 只构造窗口，不显示；`-SmokeTest` 会显示窗口，只有允许界面操作时才运行。零发现、未运行和跳过不算全套通过。

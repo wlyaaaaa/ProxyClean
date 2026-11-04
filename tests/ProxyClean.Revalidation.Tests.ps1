@@ -56,4 +56,15 @@ Describe 'Status entry does not silently perform external exit probes' {
    @($r.exit_probes)|Should -HaveCount 0;Should -Invoke Get-PCExitComparison -Times 1
   }
  }
+ It 'names a system proxy owner only while the system proxy is enabled' {
+  InModuleScope ProxyClean.Common {
+   Mock Get-PCClientStatus { [pscustomobject]@{client_inventory=@([pscustomobject]@{family='clash-verge';listeners=@([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=7892;OwningProcess=1234})})} }
+   Mock Get-PCSnapshot { [pscustomobject]@{availability=[pscustomobject]@{listeners='observed'};systemProxy=[pscustomobject]@{enabled=$false;server='127.0.0.1:7892'}} }
+   $r=(& $script:entry -Json)|ConvertFrom-Json
+   @($r.system_proxy.owner)|Should -HaveCount 0
+   Mock Get-PCSnapshot { [pscustomobject]@{availability=[pscustomobject]@{listeners='observed'};systemProxy=[pscustomobject]@{enabled=$true;server='127.0.0.1:7892'}} }
+   $r=(& $script:entry -Json)|ConvertFrom-Json
+   @($r.system_proxy.owner)|Should -Be @('clash-verge')
+  }
+ }
 }

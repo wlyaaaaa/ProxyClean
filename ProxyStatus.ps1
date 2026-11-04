@@ -12,7 +12,7 @@ $result=if($reader){[pscustomobject]@{schema='proxyclean.dynamic-status.v1';obse
 $arguments=@{Snapshot=$snapshot;ExpectMode=$ExpectMode;AppDataPath=$target.appdata;UserSid=$UserSid};if($reader){$processes=@($reader.EndInvoke($pending));if(-not $reader.HadErrors){$arguments.Processes=$processes}};$clients=Get-PCClientStatus @arguments
 } finally {if($reader){$reader.Dispose()}}
 foreach($property in $clients.PSObject.Properties){$result|Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value}
-$owners=@(foreach($client in $clients.client_inventory){foreach($endpoint in @(Get-ProxyEndpoints ([string](Get-PCStatusValue $snapshot 'systemProxy.server')))){if(@($client.listeners|Where-Object{(Get-PCListenerState $endpoint @($_)) -eq 'listening'}).Count){$client.family}}})
+$owners=@(if(Get-PCStatusValue $snapshot 'systemProxy.enabled'){foreach($client in $clients.client_inventory){foreach($endpoint in @(Get-ProxyEndpoints ([string](Get-PCStatusValue $snapshot 'systemProxy.server')))){if(@($client.listeners|Where-Object{(Get-PCListenerState $endpoint @($_)) -eq 'listening'}).Count){$client.family}}}})
 $result.system_proxy.owner=@($owners|Select-Object -Unique)
 if($ProbeExit -and -not $SkipExitProbe){$result.exit_probes=@(Get-PCExitComparison -Snapshot $snapshot);$result.conclusion.current_default='process_default_observed_when_probe_succeeds; equal exits do not identify the client'}
 if($Json){$result|ConvertTo-Json -Depth 16}elseif($Summary){$result.summary}else{
