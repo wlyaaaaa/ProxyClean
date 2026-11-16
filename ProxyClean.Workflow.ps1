@@ -2,6 +2,17 @@
 # Shared application workflow. UI callbacks receive Chinese messages, never preimages.
 $script:PCStageRecording=$false
 function Get-PCStagePath {Join-Path $env:LOCALAPPDATA 'ProxyClean\last-close-stage.json'}
+function Write-PCRepairSummary($Plan,$Result) {
+    $path=Join-Path (Split-Path (Get-PCStagePath) -Parent) 'repair-history.json'
+    $rows=@();if(Test-Path -LiteralPath $path){$rows=@(([IO.File]::ReadAllText($path)|ConvertFrom-Json).items)}
+    $status=Get-PCValue $Result 'status' 'failed';$changed=Get-PCValue $Result 'changed' (Get-PCValue $Result 'changed_before_failure')
+    $labels=@{WinInet='系统代理';UserEnv='用户环境变量';Git='Git 代理';Route='残留路由'}
+    $categories=@((Get-PCValue $Plan 'steps' @())|ForEach-Object {if($labels.ContainsKey($_.kind)){$labels[$_.kind]}}|Sort-Object -Unique)
+    $row=[ordered]@{at=[DateTimeOffset]::UtcNow.ToString('o');changed=$changed;success=($status -in @('applied','no_changes'));categories=$categories}
+    [void][IO.Directory]::CreateDirectory((Split-Path $path -Parent))
+    $json=@{since='2026-11-17';items=@($rows|Select-Object -Last 9)+@($row)}|ConvertTo-Json -Depth 5 -Compress
+    [IO.File]::WriteAllText(($path+'.tmp'),$json,[Text.UTF8Encoding]::new($false));Move-Item -LiteralPath ($path+'.tmp') -Destination $path -Force
+}
 function Write-PCProgress {
     param([scriptblock]$Progress,[string]$Stage,[string]$Message)
     if($script:PCStageRecording){
@@ -164,7 +175,7 @@ function Invoke-PCWorkflow {
         $Plan,[string]$ClientKey,[string]$ExpectedClientInstance,[switch]$Direct,[ValidateRange(0,65535)][int]$Port=0,[string]$InterfaceAlias,
         [switch]$SkipConnectivityChecks,[scriptblock]$Progress)
     # Disconnect 与 Repair 的内部函数会在同一线程重取同名 Mutex，依赖其可重入性，并各自成对释放。
-    $stageLock=$null;$stageEnd='done_failed'
+    $stageLock=$null;$stageEnd='done_failed';$repairAttempted=$false;$applied=$null
     try{
         if($Action -in @('Disconnect','Repair','Undo','Stop','WifiSoft','WifiReset','IPv6Enable','IPv6Disable') -and
             -not $PSCmdlet.ShouldProcess('选定的设置或程序','执行已确认的操作')){
@@ -208,6 +219,7 @@ function Invoke-PCWorkflow {
                 return [pscustomobject]@{action=$Action;status='inspected';clients=$clients;client_observation=$clientObservation;proxy_summary=(Get-PCProxySummary $public $clients $clientObservation);view=$view;plan=$plan;snapshot=$public;undo=$undo;adapters=$adapters;details=Format-PCInspection $public}
             }
             'Repair'{
+                $repairAttempted=-not $WhatIfPreference
                 if(-not $Plan){$Plan=Get-PCRepairPlan -Snapshot (Get-PCSnapshot -Progress $Progress) -Direct:$Direct}
                 if(@($Plan.steps).Count){$stageLock=Enter-PCLock;$script:PCStageRecording=$true}
                 $applied=Invoke-PCRepairPlan -Plan $Plan -Progress $Progress -Confirm:$false -WhatIf:$WhatIfPreference
@@ -282,6 +294,7 @@ function Invoke-PCWorkflow {
         if($cancel){$stageEnd='done_cancelled'}
         return [pscustomobject]@{action=$Action;status=if($cancel){'cancelled'}else{'failed'};message=ConvertTo-PCFriendlyError $_;error_type=$_.Exception.GetType().FullName}
     }finally{
+        if($repairAttempted){try{Write-PCRepairSummary $Plan $applied}catch{Write-Warning '修复摘要未能保存；操作结果仍按实际核验报告。' -WarningAction Continue}}
         if($stageLock){
             try{Write-PCProgress $Progress $stageEnd '本次操作已结束。'}
             finally{$script:PCStageRecording=$false;try{$stageLock.ReleaseMutex()}finally{$stageLock.Dispose()}}

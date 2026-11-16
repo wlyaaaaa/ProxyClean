@@ -48,6 +48,13 @@ function Write-PCLiveSnapshot($Status,[string]$AppData,[string]$Output) {
         elseif(-not $notes.Contains($key)){$notes[$key]='相关状态采集不完整或保存开关未核实；不填零。'}
     }
     if($null -ne $metrics.deviations -and $metrics.deviations -eq 0){$notes.deviations='没有差异；已完整核验，空明细表示没有不合习惯的开关，不是采集故障。'}
+    $metrics.repairs=$null;$notes.repairs='从 11 月 17 日起记；以前没有修复摘要，不补造。尚无真实修复摘要。'
+    $path=Join-Path $history 'repair-history.json'
+    if(Test-Path -LiteralPath $path -PathType Leaf){try{
+        $metrics.repairs=@(([IO.File]::ReadAllText($path)|ConvertFrom-Json).items|Select-Object -Last 10|Sort-Object at -Descending|ForEach-Object {
+            [ordered]@{at=$_.at;changed=$_.changed;success=$_.success;categories=@($_.categories);text=$(if($null -eq $_.changed){'修复处数未知'}else{'修了 '+$_.changed+' 处'})+'；'+($_.categories -join '、');state_text=$(if($_.success){'设置修复完成'}else{'未完成'})}
+        });$notes.repairs='从 11 月 17 日起记；只记设置修复结果，不代表联网成功；失败时处数为回退前已核验改动。'
+    }catch{$notes.repairs='修复摘要读取失败；不填零。'}}
     $document=[ordered]@{v=1;at=$at;scope='只读本机客户端、开关及历史文件元数据；未联网实测。';metrics=$metrics;deviation_records=$details;notes=$notes;size=$size;artifacts=@()}
     $full=[IO.Path]::GetFullPath($Output);[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($full))|Out-Null
     $temporary=$full+'.'+[guid]::NewGuid().ToString('N')+'.tmp'

@@ -8,6 +8,7 @@
   "sections": [
     {"id":"network","label":"上次核验谁在管上网","about":"核验时是哪家在管，会不会两家一起开，开关合不合习惯？","metrics":["takeover","running","system_proxy","deviations","saved"],"note":"只证明核验时本机开关状态，不证明能上网；旧样本保留原时刻；不合习惯 0 处表示没有差异，空明细不是采集故障。未运行客户端的保存偏好不算正在接管。"},
     {"id":"history","label":"上次用它","about":"上次动设置是哪天，它上次替我办成没有？","metrics":["undo","close"],"note":"这两行可能是你开的，也可能是 AI 维修时跑的，分不出来。没走完只说明那一次，推不出今天关不掉；撤销未实测。只读恢复槽时间和关闭阶段，不读取恢复内容。"},
+    {"id":"repairs","label":"最近几次修复","metrics":["repairs"],"note":"从 11 月 17 日起记，最多最近 10 次；以前没有摘要，不补造。"},
     {"id":"more-data","label":"更多数据","about":"好奇：已装了哪些客户端、各自保存什么开关，源码和文档有多少？","metrics":["installed","clash_tun","clash_proxy","bird_tun","bird_proxy","tracked_files","doc_files","code_files","doc_words","code_chars"],"note":"安装数只限已识别的 Clash、飞鸟；保存开关不代表实际流量。规模按需取，文档词字数每汉字和每段 ASCII 字母数字串各算 1，不计标点；代码含注释、空行和测试，排除生成物。"}
   ],
   "metrics": [
@@ -18,6 +19,7 @@
     {"id":"saved","label":"两家保存的开关合习惯的","source":"proxyclean.live","pointer":"/metrics/saved","time":"/at","scope":"/notes/saved","mode":"live","stale_after":60,"unit":"","public":"same"},
     {"id":"undo","label":"最近一份撤销记录","source":"proxyclean.live","pointer":"/metrics/undo","time":"/at","scope":"/notes/undo","mode":"live","unit":"","public":"same"},
     {"id":"close","label":"上次用它关代理","source":"proxyclean.live","pointer":"/metrics/close","time":"/at","scope":"/notes/close","mode":"live","unit":"","public":"same"},
+    {"id":"repairs","label":"哪天、修了几处、成没成","source":"proxyclean.live","pointer":"/metrics/repairs","time":"/at","scope":"/notes/repairs","mode":"live","shape":"list","unit":"次","public":"same","unknown_text":"从 11 月 17 日起记；尚无真实修复摘要。"},
     {"id":"installed","label":"已识别并安装的代理客户端","source":"proxyclean.live","pointer":"/metrics/installed","time":"/at","scope":"/notes/installed","mode":"live","stale_after":60,"unit":"","public":"same"},
     {"id":"clash_tun","label":"Clash 保存的 TUN 开关","source":"proxyclean.live","pointer":"/metrics/clash_verge_tun_enabled","time":"/at","scope":"/notes/clash_verge_tun_enabled","mode":"live","stale_after":60,"unit":"","public":"same"},
     {"id":"clash_proxy","label":"Clash 保存的系统代理开关","source":"proxyclean.live","pointer":"/metrics/clash_verge_system_proxy_enabled","time":"/at","scope":"/notes/clash_verge_system_proxy_enabled","mode":"live","stale_after":60,"unit":"","public":"same"},
