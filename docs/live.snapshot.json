@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "at": "2026-11-16T02:24:15.9851886+00:00",
+  "scope": "只读本机客户端、开关及历史文件元数据；未联网实测。",
+  "metrics": {"takeover":"Clash（TUN 开着）","running":{"text":"1 个（Clash）","count":1},"system_proxy":"关","deviations":0,"saved":"2/2","undo":{"text":"10-27 16:36 留下（北京时间）","at":"2026-10-27T08:36:05.5771696Z"},"close":{"text":"没走完（10-27 20:11，北京时间）","at":"2026-10-27T12:11:22.0100000+00:00","state_text":"没走完"},"installed":{"text":"2 个（飞鸟、Clash）","count":2},"flyingbird_tun_enabled":"开","flyingbird_system_proxy_enabled":"关","clash_verge_tun_enabled":"开","clash_verge_system_proxy_enabled":"关"},
+  "deviation_records": [],
+  "notes": {"undo":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","close":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","takeover":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","running":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","system_proxy":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","deviations":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","saved":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","installed":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","flyingbird_tun_enabled":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","flyingbird_system_proxy_enabled":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","clash_verge_tun_enabled":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。","clash_verge_system_proxy_enabled":"仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。"},
+  "size": {"at":"2026-11-16T02:24:14.9275855+00:00","docs_chars":4709,"code_lines":5909,"code_chars":354335,"doc_files":3,"code_files":34,"tracked_files":43,"doc_words":3288},
+  "artifacts": []
+}

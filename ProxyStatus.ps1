@@ -1,7 +1,8 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
-param([switch]$ProbeExit,[switch]$SkipExitProbe,[Alias('AsJson')][switch]$Json,[switch]$Summary,[ValidateSet('TunOnly')][string]$ExpectMode,[ValidatePattern('^S-1-(?:\d+-)+\d+$')][string]$UserSid)
+param([switch]$ProbeExit,[switch]$SkipExitProbe,[Alias('AsJson')][switch]$Json,[switch]$Summary,[ValidateSet('TunOnly')][string]$ExpectMode,[ValidatePattern('^S-1-(?:\d+-)+\d+$')][string]$UserSid,[string]$LiveOutput)
 $ErrorActionPreference='Stop'
+if($LiveOutput -and (-not $Summary -or $ExpectMode -ne 'TunOnly' -or $ProbeExit)){throw 'LiveOutput requires Summary, ExpectMode TunOnly and no exit probe.'}
 Import-Module (Join-Path $PSScriptRoot 'ProxyClean.Common.psm1') -Force
 $reader=$null
 $target=Get-PCStatusTarget $UserSid
@@ -14,6 +15,7 @@ $arguments=@{Snapshot=$snapshot;ExpectMode=$ExpectMode;AppDataPath=$target.appda
 foreach($property in $clients.PSObject.Properties){$result|Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value}
 $owners=@(if(Get-PCStatusValue $snapshot 'systemProxy.enabled'){foreach($client in $clients.client_inventory){foreach($endpoint in @(Get-ProxyEndpoints ([string](Get-PCStatusValue $snapshot 'systemProxy.server')))){if(@($client.listeners|Where-Object{(Get-PCListenerState $endpoint @($_)) -eq 'listening'}).Count){$client.family}}}})
 $result.system_proxy.owner=@($owners|Select-Object -Unique)
+if($LiveOutput){. (Join-Path $PSScriptRoot 'ProxyClean.Live.ps1');Write-PCLiveSnapshot $result $target.appdata $LiveOutput}
 if($ProbeExit -and -not $SkipExitProbe){$result.exit_probes=@(Get-PCExitComparison -Snapshot $snapshot);$result.conclusion.current_default='process_default_observed_when_probe_succeeds; equal exits do not identify the client'}
 if($Json){$result|ConvertTo-Json -Depth 16}elseif($Summary){$result.summary}else{
     Write-Host 'ProxyClean 分层诊断（保留地址，过滤凭据，不写文件）'

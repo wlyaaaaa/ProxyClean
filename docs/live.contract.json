@@ -1,0 +1,36 @@
+{
+  "v": 1,
+  "id": "proxyclean",
+  "name": "代理清道夫",
+  "about": "上不了网时打开，查清哪家代理在管并一键修回。",
+  "headline": "deviations",
+  "tasks": [], "skills": ["proxy-network"], "bindings_complete": true,
+  "sections": [
+    {"id":"network","label":"现在谁在管上网","about":"现在是哪家在管，会不会两家一起开，开关合不合习惯？","metrics":["takeover","running","system_proxy","deviations","saved"],"note":"只证明本机开关状态，不证明能上网；未运行客户端的保存偏好不算正在接管。"},
+    {"id":"history","label":"上次用它","about":"上次动设置是哪天，它上次替我办成没有？","metrics":["undo","close"],"note":"这两行可能是你开的，也可能是 AI 维修时跑的，分不出来。没走完只说明那一次，推不出今天关不掉；撤销未实测。只读恢复槽时间和关闭阶段，不读取恢复内容。"},
+    {"id":"more-data","label":"更多数据","about":"好奇：已装了哪些客户端、各自保存什么开关，源码和文档有多少？","metrics":["installed","clash_tun","clash_proxy","bird_tun","bird_proxy","tracked_files","doc_files","code_files","doc_words","code_chars"],"note":"安装数只限已识别的 Clash、飞鸟；保存开关不代表实际流量。规模按需取，文档词字数每汉字和每段 ASCII 字母数字串各算 1，不计标点；代码含注释、空行和测试，排除生成物。"}
+  ],
+  "metrics": [
+    {"id":"takeover","label":"真正接管上网的","source":"proxyclean.live","pointer":"/metrics/takeover","time":"/at","scope":"/notes/takeover","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"running","label":"同时在跑的代理","source":"proxyclean.live","pointer":"/metrics/running","time":"/at","scope":"/notes/running","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"system_proxy","label":"Windows 系统代理","source":"proxyclean.live","pointer":"/metrics/system_proxy","time":"/at","scope":"/notes/system_proxy","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"deviations","label":"开关不合习惯的","source":"proxyclean.live","pointer":"/metrics/deviations","time":"/at","scope":"/notes/deviations","mode":"live","stale_after":60,"unit":"处","public":"same","records":"/deviation_records","shape":"list"},
+    {"id":"saved","label":"两家保存的开关合习惯的","source":"proxyclean.live","pointer":"/metrics/saved","time":"/at","scope":"/notes/saved","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"undo","label":"最近一份撤销记录","source":"proxyclean.live","pointer":"/metrics/undo","time":"/at","scope":"/notes/undo","mode":"live","unit":"","public":"same"},
+    {"id":"close","label":"上次用它关代理","source":"proxyclean.live","pointer":"/metrics/close","time":"/at","scope":"/notes/close","mode":"live","unit":"","public":"same"},
+    {"id":"installed","label":"已识别并安装的代理客户端","source":"proxyclean.live","pointer":"/metrics/installed","time":"/at","scope":"/notes/installed","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"clash_tun","label":"Clash 保存的 TUN 开关","source":"proxyclean.live","pointer":"/metrics/clash_verge_tun_enabled","time":"/at","scope":"/notes/clash_verge_tun_enabled","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"clash_proxy","label":"Clash 保存的系统代理开关","source":"proxyclean.live","pointer":"/metrics/clash_verge_system_proxy_enabled","time":"/at","scope":"/notes/clash_verge_system_proxy_enabled","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"bird_tun","label":"备用飞鸟保存的 TUN 开关","source":"proxyclean.live","pointer":"/metrics/flyingbird_tun_enabled","time":"/at","scope":"/notes/flyingbird_tun_enabled","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"bird_proxy","label":"备用飞鸟保存的系统代理开关","source":"proxyclean.live","pointer":"/metrics/flyingbird_system_proxy_enabled","time":"/at","scope":"/notes/flyingbird_system_proxy_enabled","mode":"live","stale_after":60,"unit":"","public":"same"},
+    {"id":"tracked_files","label":"Git 跟踪文件","source":"proxyclean.live","pointer":"/size/tracked_files","time":"/size/at","mode":"static","unit":"个","public":"same"},
+    {"id":"doc_files","label":"文档源文件","source":"proxyclean.live","pointer":"/size/doc_files","time":"/size/at","mode":"static","unit":"个","public":"same"},
+    {"id":"code_files","label":"代码及界面源文件","source":"proxyclean.live","pointer":"/size/code_files","time":"/size/at","mode":"static","unit":"个","public":"same"},
+    {"id":"doc_words","label":"文档词字数（不计标点）","source":"proxyclean.live","pointer":"/size/doc_words","time":"/size/at","mode":"static","unit":"字","public":"same"},
+    {"id":"code_chars","label":"代码去空白字符数","source":"proxyclean.live","pointer":"/size/code_chars","time":"/size/at","mode":"static","unit":"字符","public":"same"}
+  ],
+  "artifacts": {"source":"proxyclean.live","pointer":"/artifacts"},
+  "size": {"source":"proxyclean.live","pointer":"/size"},
+  "links": [{"id":"intro","label":"项目介绍","href":"https://github.com/wlyaaaaa/ProxyClean#readme"}],
+  "skills_href": "/skills/?project=proxyclean"
+}

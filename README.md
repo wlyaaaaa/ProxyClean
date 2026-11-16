@@ -19,4 +19,6 @@
 
 `ProxyStatus.ps1 -Summary -ExpectMode TunOnly` 只读检查两家的运行状态及保存的 TUN、系统代理偏好，未运行客户端也会检查。保存的 TUN 开启不计作正在运行的 TUN；保存偏离单独报告。`-Json` 的 `saved_preferences` 给出目标布尔字段及采集状态，缺文件、缺字段、格式未知、多份配置和读取失败不会报符合默认。目前保存态支持 Apex 飞鸟极速版和 Clash Verge；旧版飞鸟的运行识别保留，保存格式未支持时明确报告未核实。检查不启动客户端、不修改配置，也不输出原始偏好文件。
 
+实况接入单为 `docs/live.contract.json`。按需执行 `ProxyStatus.ps1 -Summary -ExpectMode TunOnly -SkipExitProbe -Json -LiveOutput docs/live.snapshot.json`，只输出公开的开关、历史时间和规模；恢复槽只取文件元数据。SYSTEM 采样还须传核实的桌面用户 `-UserSid`。规模未变时保留原取数时间；没有历史文件或状态未核实就留空。后台采样需由现有调用方传 `-LiveOutput`；仓库不新增计划任务。快照不证明联网或撤销成功。
+
 点击检查后，国内网页、海外网页与 AI 服务分别报告 IPv4、IPv6 和已存储且正在监听的 HTTP 端点结果。没有 AAAA 记录只表示该域名不能用于这次 IPv6 测试；HTTP 403 表示服务已响应，不等于功能正常或网络断开。无显式代理的测试仍可能经过 TUN，显式 HTTP 代理的目标地址族由代理决定。路由与接口跃点仅作说明，不扩大自动修复范围。
