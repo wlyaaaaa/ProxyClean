@@ -47,6 +47,7 @@ function Write-PCLiveSnapshot($Status,[string]$AppData,[string]$Output) {
         if($null -ne $metrics[$key]){$notes[$key]='仅检查客户端、开关或历史文件；不证明联网、关闭或撤销成功。'}
         elseif(-not $notes.Contains($key)){$notes[$key]='相关状态采集不完整或保存开关未核实；不填零。'}
     }
+    if($null -ne $metrics.deviations -and $metrics.deviations -eq 0){$notes.deviations='没有差异；已完整核验，空明细表示没有不合习惯的开关，不是采集故障。'}
     $document=[ordered]@{v=1;at=$at;scope='只读本机客户端、开关及历史文件元数据；未联网实测。';metrics=$metrics;deviation_records=$details;notes=$notes;size=$size;artifacts=@()}
     $full=[IO.Path]::GetFullPath($Output);[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($full))|Out-Null
     $temporary=$full+'.'+[guid]::NewGuid().ToString('N')+'.tmp'

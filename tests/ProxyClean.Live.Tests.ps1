@@ -8,6 +8,8 @@ Describe 'Public live projection preserves incomplete counts and source times' {
         Write-PCLiveSnapshot $state $appdata $output
         $first=[IO.File]::ReadAllText($output)|ConvertFrom-Json
         $first.metrics.deviations|Should -Be 0;$first.metrics.saved|Should -Be '1/1'
+        $first.deviation_records|Should -HaveCount 0
+        $first.notes.deviations|Should -Match '没有差异'
         $first.metrics.undo|Should -BeNullOrEmpty;$first.notes.undo|Should -Match '没有恢复槽'
         $state.observedUtc='2026-11-16T02:01:00Z';$state.collection_errors=@('client_processes_unavailable')
         $client.saved_preferences.state='missing_field'
